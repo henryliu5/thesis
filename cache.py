@@ -133,7 +133,7 @@ def simulate(graph_name, batch_size, policy):
     else:    
         preload = nodes[:500]
     
-    if policy == 'mine':
+    if policy == 'mine' or policy == 'mine+reorder':
         cache = MyPolicy(CACHE_SIZE, preload=[])
         cache.update_with_lookahead(preload)
     elif policy == 'fifo':
@@ -158,8 +158,9 @@ def simulate(graph_name, batch_size, policy):
 
     # naive
     for i, layer_0 in enumerate(tqdm(nodes)):
-        if policy == '***disabled':
-            lookahead = 5
+        if policy == 'mine+reorder':
+            lookahead = 100
+            lookahead = min(lookahead, len(nodes) - i) 
             if i % lookahead == 0:
                 cache.update_with_lookahead(nodes[i:i+lookahead])
 
@@ -188,7 +189,7 @@ def simulate(graph_name, batch_size, policy):
                         cache_total += 1
         else:
             if policy == 'mine':
-                lookahead = 100
+                lookahead = 50
                 if i % lookahead == 0:
                     cache.update_with_lookahead(nodes[i:i+lookahead])
 
@@ -222,4 +223,4 @@ if __name__ == '__main__':
     simulate(str(sys.argv[2]), 1, 'mine')
     simulate(str(sys.argv[2]), 1, 'lru')
     simulate(str(sys.argv[2]), 1, 'static')
-
+    simulate(str(sys.argv[2]), 1, 'mine+reorder')
