@@ -19,8 +19,8 @@ def sizeof_fmt(num, suffix="B"):
 def try_compression(feature_data, element_size, feature_bytes, df_rows, name, batch_size):
     # codecs = [blosc2.Codec.BLOSCLZ, blosc2.Codec.LZ4, blosc2.Codec.LZ4HC, blosc2.Codec.ZLIB, blosc2.Codec.ZSTD]
     codecs = [blosc2.Codec.LZ4, blosc2.Codec.ZSTD]
-    # filters = [blosc2.Filter.NOFILTER, blosc2.Filter.SHUFFLE, blosc2.Filter.BITSHUFFLE, blosc2.Filter.DELTA, blosc2.Filter.TRUNC_PREC]
-    filters = [blosc2.Filter.NOFILTER, blosc2.Filter.DELTA]
+    filters = [blosc2.Filter.NOFILTER, blosc2.Filter.BITSHUFFLE]
+    # filters = [blosc2.Filter.NOFILTER, blosc2.Filter.DELTA]
     print('element size', element_size)
     for codec in codecs:
         for filter in filters:
@@ -33,7 +33,7 @@ def try_compression(feature_data, element_size, feature_bytes, df_rows, name, ba
             df_rows.append(pd.DataFrame(res))
 
 def compress_samples():
-    datasets = ['ogbn-products', 'reddit', 'citeseer', 'cora']
+    datasets = ['ogbn-arxiv', 'ogbn-products', 'reddit', 'citeseer']
     batch_sizes = [1, 256, 1024]
     df_rows = []
     for name in datasets:
@@ -60,10 +60,10 @@ def compress_samples():
                 try_compression(feature_data, features.element_size(), feature_bytes, df_rows, name, batch_size)
                 
     df = pd.concat(df_rows)
-    df.to_csv('compress_table.pkl')
+    df.to_csv('compress_table.csv')
 
 if __name__ == '__main__':
-    # compress_samples()
+    compress_samples()
 
     df = pd.read_csv('compress_table.csv')
     g = sns.catplot(df, x='batch_size', y='ratio', col='graph', kind="bar", hue="codec", col_wrap=2)
