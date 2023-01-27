@@ -4,17 +4,13 @@ from ogb.nodeproppred import DglNodePropPredDataset
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from dgl.data import RedditDataset
+from dgl.data import RedditDataset, CoraFullDataset, CiteseerGraphDataset
 import torch as th
 from tqdm import tqdm
 import pickle
 
 def get_graph(name):
-    if name == 'reddit':
-        dataset = RedditDataset()
-        graph = dataset[0]
-        train_nids = th.nonzero(graph.ndata['train_mask']).squeeze()
-    elif name.startswith('ogbn'):
+    if name.startswith('ogbn'):
         if name == 'ogbn-products-METIS':
             dataset = DglNodePropPredDataset('ogbn-products')
             graph, _ = dataset[0]
@@ -29,8 +25,21 @@ def get_graph(name):
         idx_split = dataset.get_idx_split()
         train_nids = idx_split['train']
     else:
-        print('graph', name, 'not supported')
-        exit()
+        if name == 'reddit':
+            dataset = RedditDataset()
+        elif name == 'cora':
+            dataset = CoraFullDataset()
+        elif name == 'citeseer':
+            dataset = CiteseerGraphDataset()
+        else:  
+            print('graph', name, 'not supported')
+            exit()
+        graph = dataset[0]
+        # disable citeseer train mask since it is tiny (120 nodes)
+        if 'train_mask' in graph.ndata and name != 'citeseer':
+            train_nids = th.nonzero(graph.ndata['train_mask']).squeeze()
+        else:
+            train_nids = th.arange(graph.num_nodes())
 
     return graph, train_nids
 
