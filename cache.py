@@ -5,15 +5,17 @@ import matplotlib.pyplot as plt
 from functools import lru_cache
 import pickle
 from tqdm import tqdm
+import sys
+import queue
 
-# ten_gb_cache = 312_500_000
-# four_gb_cache = 125_000_000
-two_gb_cache = 500_000_000 # how many 32-bit integers can be held
+# ten_gb_mem = 312_500_000
+# four_gb_mem = 125_000_000
+two_gb_mem = 500_000_000 # how many 32-bit values can be held
 
 features = 100
-CACHE_SIZE = two_gb_cache // features
+CACHE_SIZE = two_gb_mem // features
 
-CACHE_SIZE = CACHE_SIZE // 8
+CACHE_SIZE = int(CACHE_SIZE * float(sys.argv[1]))
 
 total_evictions = 0
 
@@ -39,45 +41,38 @@ class LRUPolicy:
 class FIFOPolicy:
     def __init__(self, n, preload):
         self.n = n
-        # TODO fix
         self.s = set()
-        self.list = []
-        # for layer_0 in tqdm(preload):
-        #     done = False
-        #     for x in layer_0:
-        #         self.s.add(x.item())
-        #         if len(self.s) == n:
-        #             done = True
-        #             break
-        #     if done:
-        #         break
-
-        # self.list = list(self.s) #[x.item() for layer_0 in tqdm(preload) for x in layer_0]
-
-        # if len(self.list) > n:
-        #     print('warning: list is length', len(self.list), 'but n is:', n)
-        self.test_count = {}
+        self.q = queue.SimpleQueue()
 
     def try_get(self, x):
-        # if x not in self.test_count:
-        #     self.test_count[x] = 0
-        # self.test_count[x] += 1
-
         global total_evictions
         if x in self.s:
             return True
 
-        if len(self.list) == self.n:
-            evicted = self.list.pop()     
+        if self.q.qsize() == self.n:
+            evicted = self.q.get()  
             self.s.remove(evicted)
-            # print(self.test_count[evicted])
             total_evictions += 1
 
-        self.list.append(x)
+        self.q.put(x)
         self.s.add(x)
 
         return False
 
+class StaticPolicy:
+    def __init__(self, n, graph_name):
+        self.n = n
+        # TODO fix
+        sort_nid = np.load(f'{graph_name}_ordered.npz')['arr_0']
+        cache_nid = sort_nid[:n]
+        self.s = set(cache_nid)
+
+    def try_get(self, x):
+        global total_evictions
+        if x in self.s:
+            return True
+
+        return False
 
 class MyPolicy:
     def __init__(self, n, preload):
@@ -85,24 +80,6 @@ class MyPolicy:
         self.s = set()
         self.list = []
         self.count = {}
-        # for layer_0 in tqdm(preload):
-        #     done = False
-        #     for x in layer_0:
-        #         self.s.add(x.item())
-        #         if len(self.s) == n:
-        #             done = True
-        #             break
-        #     if done:
-        #         break
-
-        # self.list = list(self.s) #[x.item() for layer_0 in tqdm(preload) for x in layer_0]
-
-        # if len(self.list) > n:
-        #     print('warning: list is length', len(self.list), 'but n is:', n)
-
-        # self.count = {}
-        # self.update_with_lookahead(preload)
-        # self.list.sort(key=lambda x: -self.count[x])
 
         self.accesses_since_update = 0
 
@@ -131,8 +108,6 @@ class MyPolicy:
             evicted = self.list.pop()
             self.s.remove(evicted)
             total_evictions += 1
-            # print('evicting', evicted, 'has count', self.count[evicted])
-
 
         self.list.append(x)
         self.s.add(x)
@@ -153,7 +128,10 @@ def simulate(graph_name, batch_size, policy):
     num_cache_misses = 0
     cache_total = 0
 
-    preload = nodes[:500]
+    if graph_name == 'reddit':
+        preload = nodes[:100]
+    else:    
+        preload = nodes[:500]
     
     if policy == 'mine':
         cache = MyPolicy(CACHE_SIZE, preload=[])
@@ -162,6 +140,8 @@ def simulate(graph_name, batch_size, policy):
         cache = FIFOPolicy(CACHE_SIZE, preload=[])
     elif policy == 'lru':
         cache = LRUPolicy(CACHE_SIZE, preload=[])
+    elif policy == 'static':
+        cache = StaticPolicy(CACHE_SIZE, graph_name)
 
     # Warm caches with some queries
     for layer_0 in tqdm(preload):
@@ -171,7 +151,10 @@ def simulate(graph_name, batch_size, policy):
 
     print('preload done')
     time = 0
-    nodes = nodes[500:2500]
+    if graph_name == 'reddit':
+        nodes = nodes[100:250]
+    else:    
+        nodes = nodes[500:1500]
 
     # naive
     for i, layer_0 in enumerate(tqdm(nodes)):
@@ -223,6 +206,10 @@ def simulate(graph_name, batch_size, policy):
     print('hit ratio:', hit_ratio)
     print('total evictions', total_evictions)
 
+    f = open(f"results/{policy}_hit_ratio_cache_{sys.argv[1]}_{sys.argv[2]}.txt", "w")
+    f.write(str(hit_ratio))
+    f.close()
+
     # df = pd.DataFrame(cache_misses, columns=['cache misses over time'])
     # df = df.sample(n=5000, replace=False, random_state=1)
 
@@ -231,6 +218,8 @@ def simulate(graph_name, batch_size, policy):
     # plt.show()
 
 if __name__ == '__main__':
-    simulate('ogbn-products', 1, 'mine')
-    simulate('ogbn-products', 1, 'lru')
-    simulate('ogbn-products', 1, 'fifo')
+    simulate(str(sys.argv[2]), 1, 'fifo')
+    simulate(str(sys.argv[2]), 1, 'mine')
+    simulate(str(sys.argv[2]), 1, 'lru')
+    simulate(str(sys.argv[2]), 1, 'static')
+

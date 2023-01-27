@@ -14,15 +14,23 @@ def get_graph(name):
         dataset = RedditDataset()
         graph = dataset[0]
         train_nids = th.nonzero(graph.ndata['train_mask']).squeeze()
-    elif name == 'ogbn-products':
-        dataset = DglNodePropPredDataset('ogbn-products')
-        graph, node_labels = dataset[0]
+    elif name.startswith('ogbn'):
+        if name == 'ogbn-products-METIS':
+            dataset = DglNodePropPredDataset('ogbn-products')
+            graph, _ = dataset[0]
+            # Partition 5 ways, use first one as the new graph
+            graph = dgl.metis_partition(graph, 5)[0]
+        else:
+            dataset = DglNodePropPredDataset(name)
+            graph, _ = dataset[0]
         # Add reverse edges since ogbn-arxiv is unidirectional.
         graph = dgl.add_reverse_edges(graph)
-        graph.ndata['label'] = node_labels[:, 0]
 
         idx_split = dataset.get_idx_split()
         train_nids = idx_split['train']
+    else:
+        print('graph', name, 'not supported')
+        exit()
 
     return graph, train_nids
 
@@ -114,10 +122,21 @@ def save_sampling(graph_name, batch_size, sampler, n):
     # sns.displot(df, kde=True)
     # plt.show()
 
+def save_sort(name):
+    dgl_g, _ = get_graph(name)
+    out_degrees = dgl_g.out_degrees()
+    sort_nid = th.argsort(out_degrees, descending=True).numpy()
+    np.savez_compressed(f'{name}_ordered', sort_nid)
 
 if __name__ == '__main__':
     # do_plot()
     batchs = [1]#, 8, 64, 128, 256, 512, 1024]
     for b in batchs:
-        save_sampling('reddit', b, dgl.dataloading.MultiLayerFullNeighborSampler(2), 10000)
+        # save_sampling('reddit', b, dgl.dataloading.MultiLayerFullNeighborSampler(2), 10000)
         # save_sampling('ogbn-products', b, dgl.dataloading.MultiLayerFullNeighborSampler(2), 10000)
+        # save_sampling('ogbn-arxiv', b, dgl.dataloading.MultiLayerFullNeighborSampler(2), 10000)
+        save_sampling('ogbn-products-METIS', b, dgl.dataloading.MultiLayerFullNeighborSampler(2), 10000)
+        # save_sort('reddit')
+        # save_sort('ogbn-products')
+        # save_sort('ogbn-arxiv')
+        # save_sort('ogbn-products-METIS')
