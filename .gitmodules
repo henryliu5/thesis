@@ -1,0 +1,3 @@
+[submodule "dgl_fork"]
+	path = dgl_fork
+	url = git@github.com:henryliu5/dgl.git
