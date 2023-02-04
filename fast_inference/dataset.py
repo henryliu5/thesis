@@ -137,14 +137,14 @@ class InferenceDataset(DGLDataset):
         eids_to_keep = self._orig_graph.filter_edges(
             lambda edges: edges.data['should_keep'])
 
-        self._pruned_graph = dgl.edge_subgraph(
-            self._orig_graph, eids_to_keep, relabel_nodes=False)
-
         # clean up "features"
         self._orig_graph.ndata.pop('is_infer_target')
         self._orig_graph.edata.pop('should_remove')
         self._orig_graph.ndata.pop('is_not_infer_target')
         self._orig_graph.edata.pop('should_keep')
+
+        self._pruned_graph = dgl.edge_subgraph(
+            self._orig_graph, eids_to_keep, relabel_nodes=False)
 
     def create_inference_trace(self, trace_len: int):
         """Create a trace of inference requests
@@ -198,6 +198,7 @@ class InferenceDataset(DGLDataset):
         # load processed data from directory `self.save_path`
         graph_path = os.path.join(self.save_path, '_dgl_graph.bin')
         self.graphs, _ = load_graphs(graph_path)
+        self._pruned_graph = self.graphs[0]
 
         info_path = os.path.join(self.save_path, '_info.pkl')
         trace_info = load_info(info_path)
