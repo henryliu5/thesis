@@ -1,6 +1,73 @@
 from fast_inference.dataset import InferenceDataset
+from fast_inference.models.gcn import GCN
+import dgl
+import torch
+import time
+from tqdm import tqdm
+
+# TODO actually require feature movement, currently everything goes on one device
+device = 'cuda'
 
 if __name__ == '__main__':
-    infer_data = InferenceDataset('reddit', 0.1, force_reload=True, verbose=True)
-    g = infer_data[0]
+    infer_data = InferenceDataset('cora', 0.1, force_reload=False, verbose=True)
+    g = infer_data[0].to(device)
+
+    in_size = g.ndata["feat"].shape[1]
+    out_size = infer_data.num_classes
+    # Model goes on DEVICE
+    model = GCN(in_size, 16, out_size).to(device)
+
     print(g)
+    print(infer_data.trace_nids)
+    # Test static batch size of 1
+    n = infer_data.trace_len
+    total_time = 0
+    model_time = 0
+    for i in tqdm(range(n)):
+        start = time.time()
+        # TODO make MFG setup work with any batch size and number of layers
+        # TODO see if this MFG setup can be done faster
+        # TODO see GW FastToBlock https://github.com/gwsshs22/dgl/blob/infer-main/src/inference/graph_api.cc
+
+        mfgs = []
+        new_nid = infer_data.trace_nids[i].to(device)
+        src_n = infer_data.trace_edges[i]["in"].to(device)
+        
+        # Create first layer message flow graph by looking at required neighbors
+        frontier = dgl.sampling.sample_neighbors(g, src_n, -1)
+        first_mfg = dgl.to_block(frontier, torch.cat((src_n, new_nid.reshape(1)))) # Need to do cat here as should have target node
+
+
+        src_n = infer_data.trace_edges[i]["in"]
+        dst_n = infer_data.trace_nids[i].expand(src_n.shape)
+        nid = infer_data.trace_nids[i]
+
+        # Create a message flow graph using the new edges
+        mfg = dgl.graph((src_n, dst_n)).to(device)
+        last_mfg = dgl.to_block(mfg, new_nid)
+        
+        # src_map = torch.arange(src_n.shape[0])
+        # dst_map = torch.zeros(dst_n.shape)
+        # print(src_map)
+        # print(dst_map)
+        # last_mfg = dgl.create_block((src_map, dst_map), num_src_nodes=src_n.shape[0], num_dst_nodes=dst_n.shape[0])
+
+        # print(last_mfg)
+        mfgs.append(first_mfg)
+        mfgs.append(last_mfg)
+
+        # Move features
+        # mfgs[0].srcdata['feat'] = g.ndata['feat'][mfgs[0].srcdata[dgl.NID]]
+        # mfgs[1].srcdata['feat'] = g.ndata['feat'][mfgs[1].srcdata[dgl.NID]]
+
+        # print(mfgs[1].dstdata[dgl.NID])
+        # print(g.ndata['feat'][mfgs[1].dstdata[dgl.NID]].shape)
+
+        inputs = mfgs[0].srcdata['feat']
+        model_start = time.time()
+        model(mfgs, inputs)
+        model_end = time.time()
+        end = time.time()
+        total_time += end - start
+        model_time += model_end - model_start
+    print('time elapsed: ', total_time, 'avg request:', total_time / n, 'avg model forward:', model_time / n)

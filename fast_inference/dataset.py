@@ -90,6 +90,7 @@ class InferenceDataset(DGLDataset):
                                                  **self._internal_kwargs)
 
         self._orig_graph = self._dataset[0]
+        self._num_classes = self._dataset.num_classes
 
     def process(self):
         """Split graph into training and inference nodes"""
@@ -192,7 +193,8 @@ class InferenceDataset(DGLDataset):
         save_info(info_path, {'trace_nids': self._trace_nids,
                               'trace_features': self._trace_features,
                               'trace_edges': self._trace_edges,
-                              'num_infer_targets': self._num_infer_targets})
+                              'num_infer_targets': self._num_infer_targets,
+                              'num_classes': self._num_classes})
 
     def load(self):
         # load processed data from directory `self.save_path`
@@ -206,6 +208,7 @@ class InferenceDataset(DGLDataset):
         self._trace_features = trace_info['trace_features']
         self._trace_edges = trace_info['trace_edges']
         self._num_infer_targets = trace_info['num_infer_targets']
+        self._num_classes = trace_info['num_classes']
 
         assert (len(self._trace_nids) == len(self._trace_features))
         assert (len(self._trace_nids) == len(self._trace_edges))
@@ -242,5 +245,9 @@ class InferenceDataset(DGLDataset):
         return self._trace_edges
 
     @property
-    def num_infer_targets(self):
-        return self._num_infer_targets
+    def trace_len(self):
+        return self.TRACE_LEN
+    
+    @property
+    def num_classes(self):
+        return self._num_classes
