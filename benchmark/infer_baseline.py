@@ -3,13 +3,13 @@ from fast_inference.models.gcn import GCN
 from fast_inference.timer import enable_timers, Timer, print_timer_info
 import dgl
 import torch
-import time
 from tqdm import tqdm
 
 # TODO actually require feature movement, currently everything goes on one device
 device = 'cuda'
 
-if __name__ == '__main__':
+@torch.no_grad()
+def main():
     enable_timers()
     infer_data = InferenceDataset('cora', 0.1, force_reload=False, verbose=True)
     g = infer_data[0].to(device)
@@ -18,12 +18,12 @@ if __name__ == '__main__':
     out_size = infer_data.num_classes
     # Model goes on DEVICE
     model = GCN(in_size, 16, out_size).to(device)
+    model.eval()
 
     print(g)
-    print(infer_data.trace_nids)
+
     # Test static batch size of 1
     n = infer_data.trace_len
-    model_time = 0
     for i in tqdm(range(n)):
         with Timer(name='total'):
             # TODO make MFG setup work with any batch size and number of layers
@@ -63,9 +63,14 @@ if __name__ == '__main__':
 
             # print(mfgs[1].dstdata[dgl.NID])
             # print(g.ndata['feat'][mfgs[1].dstdata[dgl.NID]].shape)
-
+            
             inputs = mfgs[0].srcdata['feat']
+            mfgs[0].srcdata.pop('feat')
+            mfgs[0].dstdata.pop('feat')
             with Timer(name='model'):
                 model(mfgs, inputs)
 
     print_timer_info()
+
+if __name__ == '__main__':
+    main()
