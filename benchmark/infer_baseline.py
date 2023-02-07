@@ -6,14 +6,14 @@ import torch
 from tqdm import tqdm
 
 # TODO actually require feature movement, currently everything goes on one device
-device = 'cuda'
+device = 'cpu'
 
 @torch.no_grad()
 def main():
     enable_timers()
     infer_data = InferenceDataset('cora', 0.1, force_reload=False, verbose=True)
     g = infer_data[0].to(device)
-
+    
     in_size = g.ndata["feat"].shape[1]
     out_size = infer_data.num_classes
     # Model goes on DEVICE
@@ -32,16 +32,17 @@ def main():
 
             mfgs = []
             new_nid = infer_data.trace_nids[i].to(device)
+            assert(g.in_edges(new_nid, form='eid').shape[0] == 0)
+            assert(g.out_edges(new_nid, form='eid').shape[0] == 0)
+
             src_n = infer_data.trace_edges[i]["in"].to(device)
             
             # Create first layer message flow graph by looking at required neighbors
             frontier = dgl.sampling.sample_neighbors(g, src_n, -1)
             first_mfg = dgl.to_block(frontier, torch.cat((src_n, new_nid.reshape(1)))) # Need to do cat here as should have target node
 
-
             src_n = infer_data.trace_edges[i]["in"]
             dst_n = infer_data.trace_nids[i].expand(src_n.shape)
-            nid = infer_data.trace_nids[i]
 
             # Create a message flow graph using the new edges
             mfg = dgl.graph((src_n, dst_n)).to(device)
