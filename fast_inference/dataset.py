@@ -1,3 +1,4 @@
+from ogb.nodeproppred import DglNodePropPredDataset
 from dgl.data import DGLDataset, RedditDataset, CoraFullDataset, CiteseerGraphDataset
 import os
 import shutil
@@ -79,6 +80,21 @@ class InferenceDataset(DGLDataset):
         self.download()
 
     def download(self):
+        if self._orig_name.startswith('ogbn'):
+            # if self._orig_name == 'ogbn-products-METIS':
+            #     dataset = DglNodePropPredDataset('ogbn-products')
+            #     graph, _ = dataset[0]
+            #     # Partition 5 ways, use first one as the new graph
+            #     graph = dgl.metis_partition(graph, 5)[0]
+            # else:
+            self._dataset = DglNodePropPredDataset(self._orig_name)
+            self._orig_graph, _ = self._dataset[0]
+            if self._orig_name == 'ogbn-arxiv':
+                # Add reverse edges since ogbn-arxiv is unidirectional.
+                self._orig_graph = dgl.add_reverse_edges(self._orig_graph)
+            self._num_classes = self._dataset.num_classes
+            return 
+        
         if self._orig_name == 'reddit':
             self._dataset = RedditDataset(verbose=self._verbose,
                                           **self._internal_kwargs)
@@ -247,7 +263,7 @@ class InferenceDataset(DGLDataset):
     @property
     def trace_len(self):
         return self.TRACE_LEN
-    
+
     @property
     def num_classes(self):
         return self._num_classes
