@@ -1,6 +1,9 @@
 from contextlib import contextmanager
 import time
 import torch
+import pandas as pd
+from typing import Dict, Any
+import os
 
 TRACE_ENABLED = False
 TRACES = {}
@@ -39,19 +42,49 @@ def Timer(name, track_cuda = False):
                 end_time = time.time()
                 TRACES[name].append(end_time - start_time)
 
-def print_timer_info():
-    ''' Print global timing info collected through Timer 
+def clear_timers():
+    global TRACES
+    TRACES = {}
 
-    WARNING: Performs CUDA syncrhonization for accurate events
-    '''
+def sync_timers():
+    ''' Synchronize and capture cuda event timers '''
     torch.cuda.synchronize()
     global EVENT_CLOSURES
     for v in EVENT_CLOSURES.values():
         for f in v:
             f()
-
     EVENT_CLOSURES = {}
-    print('Timing summary: ')
+
+def print_timer_info(ignore_first_n = 2):
+    ''' Print global timing info collected through Timer 
+
+    WARNING: Performs CUDA syncrhonization for accurate events
+    '''
+    sync_timers()
+
+    print(f'Timing summary (trials[{ignore_first_n}:end]): ')
     for k, v in TRACES.items():
+        v = v[ignore_first_n:]
         print('\tTotal', k, 'time:', round(sum(v), 4))
         print('\t\tAvg:', round(sum(v) / len(v), 6))
+
+def export_timer_info(path, current_config: Dict[str, Any], ignore_first_n = 2):
+    ''' Write data to CSV '''
+    df = pd.DataFrame.from_dict(TRACES)
+
+    # Drop first n: https://sparkbyexamples.com/pandas/pandas-drop-first-n-rows-from-dataframe/
+    df = df.tail(-ignore_first_n)
+
+    # Add keys as new columns, v is constant value
+    for k, v in current_config.items():
+        df[k] = v
+    
+    file_name = str([v for v in current_config.values()])
+    file_name = file_name.strip()
+    file_name = file_name.strip('[')
+    file_name = file_name.strip(']')
+    file_name = file_name.replace(', ', '-')
+    file_name = file_name.replace('\'', '')
+    file_name = file_name + '.csv'
+    df.to_csv(os.path.join(path, file_name))
+
