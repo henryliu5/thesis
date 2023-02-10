@@ -83,3 +83,5 @@ def plot_latency_breakdown(model_name):
 
 if __name__ == '__main__':
     plot_latency_breakdown('GCN')
+    plot_latency_breakdown('SAGE')
+    plot_latency_breakdown('GAT')

@@ -1,5 +1,8 @@
 from fast_inference.dataset import InferenceDataset
 from fast_inference.models.gcn import GCN
+from fast_inference.models.sage import SAGE
+from fast_inference.models.gat import GAT
+from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
 import dgl
 import torch
@@ -17,7 +20,7 @@ def tracefunc(frame, event, arg, indent=[0]):
 device = 'cuda'
 
 @torch.no_grad()
-def main(name, batch_size):
+def main(name, model_name, batch_size):
     BATCH_SIZE = batch_size
     enable_timers()
     clear_timers()
@@ -27,7 +30,7 @@ def main(name, batch_size):
     in_size = g.ndata["feat"].shape[1]
     out_size = infer_data.num_classes
     # Model goes on DEVICE
-    model = GCN(in_size, 16, out_size).to(device)
+    model = load_model(model_name, in_size, out_size).to(device)
     model.eval()
 
     print(g)
@@ -101,11 +104,13 @@ def main(name, batch_size):
                 model(mfgs, inputs)
 
     print_timer_info()
-    export_timer_info(f'benchmark/data/timing_breakdown', {'name': name, 'batch_size': batch_size})
+    export_timer_info(f'benchmark/data/timing_breakdown/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
+    models = ['gcn', 'sage', 'gat']
     names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
-    batch_sizes = [128]
-    for name in names:
-        for batch_size in batch_sizes:
-            main(name=name, batch_size=batch_size)
+    batch_sizes = [1, 64, 128, 256]
+    for model in models:
+        for name in names:
+            for batch_size in batch_sizes:
+                main(name=name, model_name=model, batch_size=batch_size)
