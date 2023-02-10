@@ -4,6 +4,7 @@ import torch
 import pandas as pd
 from typing import Dict, Any
 import os
+from pathlib import Path
 
 TRACE_ENABLED = False
 TRACES = {}
@@ -86,5 +87,7 @@ def export_timer_info(path, current_config: Dict[str, Any], ignore_first_n = 2):
     file_name = file_name.replace(', ', '-')
     file_name = file_name.replace('\'', '')
     file_name = file_name + '.csv'
+    
+    Path(path).mkdir(parents=True, exist_ok=True)
     df.to_csv(os.path.join(path, file_name))
 

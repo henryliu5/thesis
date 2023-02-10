@@ -1,9 +1,7 @@
 from fast_inference.dataset import InferenceDataset
-from fast_inference.models.gcn import GCN
-from fast_inference.models.sage import SAGE
-from fast_inference.models.gat import GAT
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
+from fast_inference.feat_server import FeatureServer
 import dgl
 import torch
 from tqdm import tqdm
@@ -26,9 +24,22 @@ def main(name, model_name, batch_size):
     clear_timers()
     infer_data = InferenceDataset(name, 0.1, force_reload=False, verbose=True)
     g = infer_data[0]
-    
     in_size = g.ndata["feat"].shape[1]
     out_size = infer_data.num_classes
+
+    # Set up feature server
+    feat_server = FeatureServer(g, 'cuda')
+    out_deg = g.out_degrees()
+
+    # Let's use top 20% of node features for static cache
+    _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.20), sorted=False)
+    feat_server.set_static_cache(indices, ['feat'])
+    print('Caching', indices.shape[0], 'nodes')
+
+    # Convert our graph into just a "logical" graph, all features live in the feature server
+    g = dgl.graph(g.edges())
+    g.ndata['orig_id'] = torch.arange(g.num_nodes())
+
     # Model goes on DEVICE
     model = load_model(model_name, in_size, out_size).to(device)
     model.eval()
@@ -93,21 +104,22 @@ def main(name, model_name, batch_size):
                     inputs = mfgs[0].srcdata['feat']
                 else:
                     # Graph.to(device) moves features as well
+                    # mfgs[0] = mfgs[0].to(device)
+                    # mfgs[1] = mfgs[1].to(device)
+                    # inputs = mfgs[0].srcdata['feat']
+                    inputs = feat_server.get_features(mfgs[0].ndata['orig_id']['_N'], feats=['feat'])['feat']
                     mfgs[0] = mfgs[0].to(device)
                     mfgs[1] = mfgs[1].to(device)
-                    inputs = mfgs[0].srcdata['feat']
-
-            mfgs[0].srcdata.pop('feat')
-            mfgs[0].dstdata.pop('feat')
 
             with Timer(name='model', track_cuda=True):
                 model(mfgs, inputs)
 
     print_timer_info()
-    export_timer_info(f'benchmark/data/timing_breakdown/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
+    # TODO parameterize output path
+    export_timer_info(f'benchmark/data/cache_breakdown/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
-    models = ['gcn', 'sage', 'gat']
+    models = ['gcn']#, 'sage', 'gat']
     names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
     for model in models:

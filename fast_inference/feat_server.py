@@ -45,8 +45,9 @@ class FeatureServer:
 
             # Features from GPU mem
             # self.cache_mapping maps the global node id to the respective index in the cache
-            required_gpu_features = self.cache[feat][self.cache_mapping[node_ids[gpu_mask]]]
-            res_tensor[gpu_mask] = required_gpu_features
+            if feat in self.cache: # hacky drop in for torch.any(gpu_mask)
+                required_gpu_features = self.cache[feat][self.cache_mapping[node_ids[gpu_mask]]]
+                res_tensor[gpu_mask] = required_gpu_features
             
             res[feat] = res_tensor
 
