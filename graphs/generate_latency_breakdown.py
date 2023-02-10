@@ -4,7 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 
-def plot_latency_breakdown(model_name):
+def plot_latency_breakdown(model_name, path):
     names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
 
@@ -12,10 +12,10 @@ def plot_latency_breakdown(model_name):
     for name in names:
         for batch_size in batch_sizes:
             dfs.append(pd.read_csv(os.path.join(
-                'benchmark/data/timing_breakdown', model_name, f'{name}-{batch_size}.csv')))
+                path, model_name, f'{name}-{batch_size}.csv')))
 
     df = pd.concat(dfs)
-    print(df)
+    # print(df)
 
     g = sns.catplot(df, x='batch_size', y='total',
                     col='name', kind="bar", col_wrap=2)
@@ -33,7 +33,7 @@ def plot_latency_breakdown(model_name):
 
     # Compute averages
     avg_df = df.groupby(['name', 'batch_size'], as_index=False).mean()
-
+    print(avg_df)
     # Compute percentages of each type
     avg_df[['(cpu) sampling', 'CPU-GPU copy', 'model']] = avg_df[['(cpu) sampling',
                                                                   'CPU-GPU copy', 'model']].div(avg_df.total, axis=0).mul(100)
@@ -78,10 +78,12 @@ def plot_latency_breakdown(model_name):
     # Set big figure title
     fig.suptitle(f'{model_name} inference latency', fontsize=16)
     # Save
-    plt.savefig(f'{model_name}_latency_breakdown.png', bbox_inches='tight', dpi=100)
+    plt.savefig(f'{model_name}_latency_breakdown.png',
+                bbox_inches='tight', dpi=100)
 
 
 if __name__ == '__main__':
-    plot_latency_breakdown('GCN')
-    plot_latency_breakdown('SAGE')
-    plot_latency_breakdown('GAT')
+    path = 'benchmark/data/timing_breakdown'
+    plot_latency_breakdown('GCN', path)
+    # plot_latency_breakdown('SAGE')
+    # plot_latency_breakdown('GAT')
