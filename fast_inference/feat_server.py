@@ -3,7 +3,7 @@ import dgl
 from typing import List
 
 class FeatureServer:
-    def __init__(self, g: dgl.DGLGraph, device: torch.device or str):
+    def __init__(self, g: dgl.DGLGraph, device: torch.device or str, profile_hit_rate = False):
         """ Initializes a new FeatureServer
 
         Args:
@@ -17,6 +17,9 @@ class FeatureServer:
         self.cache_mapping = - \
             torch.ones(g.num_nodes(), device=self.device).long()
         self.cache = {}
+        self.profile = profile_hit_rate
+        self.requests = 0
+        self.cache_hits = 0
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str]):
         """Get features for a list of nodes.
@@ -31,6 +34,10 @@ class FeatureServer:
         # Used to mask this particular request - not to mask the cache!!
         gpu_mask = self.nid_is_on_gpu[node_ids]
         cpu_mask = ~gpu_mask
+
+        if self.profile:
+            self.requests += node_ids.shape[0]
+            self.cache_hits += gpu_mask.long().sum()
 
         for feat in feats:
             feat_shape = list(self.g.ndata[feat].shape[1:])
@@ -67,3 +74,8 @@ class FeatureServer:
 
         for feat in feats:
             self.cache[feat] = self.g.ndata[feat][node_ids].to(self.device)
+
+    def get_cache_hit_ratio(self):
+        assert (self.profile), "Profiling must be turned on for this FeatureServer."
+        assert (self.requests != 0), "No requests received by FeatureServer yet."
+        return (self.cache_hits / self.requests).item()
