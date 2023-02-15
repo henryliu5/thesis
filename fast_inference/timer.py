@@ -5,6 +5,7 @@ import pandas as pd
 from typing import Dict, Any
 import os
 from pathlib import Path
+from torch.profiler import record_function
 
 TRACE_ENABLED = False
 TRACES = {}
@@ -15,33 +16,35 @@ def enable_timers():
 
 @contextmanager
 def Timer(name, track_cuda = False):
+    track_cuda = False
     global TRACE_ENABLED
-    try:
-        if TRACE_ENABLED:
-            if track_cuda:
-                start = torch.cuda.Event(enable_timing=True)
-                end = torch.cuda.Event(enable_timing=True)
-                start.record()
-            else:
-                start_time = time.time()
-        yield
-    finally:
-        if TRACE_ENABLED:
-            if name not in TRACES:
-                TRACES[name] = []
-            if track_cuda:
-                end.record()
+    if TRACE_ENABLED:
+        with record_function(name):
+            try:
+                if track_cuda:
+                    start = torch.cuda.Event(enable_timing=True)
+                    end = torch.cuda.Event(enable_timing=True)
+                    start.record()
+                else:
+                    start_time = time.time()
+                yield
+            finally:
+                if name not in TRACES:
+                    TRACES[name] = []
+                if track_cuda:
+                    end.record()
+                    # torch.cuda.synchronize()
+                    # TRACES[name].append(start.elapsed_time(end) / 1000.0)
+                    def event_end_closure():
+                        # Use a closure here that will be called later record event times after sync
+                        TRACES[name].append(start.elapsed_time(end) / 1000.0)
 
-                def event_end_closure():
-                    # Use a closure here that will be called later record event times after sync
-                    TRACES[name].append(start.elapsed_time(end) / 1000.0)
-
-                if name not in EVENT_CLOSURES:
-                    EVENT_CLOSURES[name] = []
-                EVENT_CLOSURES[name].append(event_end_closure)
-            else:
-                end_time = time.time()
-                TRACES[name].append(end_time - start_time)
+                    if name not in EVENT_CLOSURES:
+                        EVENT_CLOSURES[name] = []
+                    EVENT_CLOSURES[name].append(event_end_closure)
+                else:
+                    end_time = time.time()
+                    TRACES[name].append(end_time - start_time)
 
 def clear_timers():
     global TRACES

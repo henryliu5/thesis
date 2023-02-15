@@ -5,6 +5,7 @@ from fast_inference.feat_server import FeatureServer
 import dgl
 import torch
 from tqdm import tqdm
+from torch.profiler import profile, record_function, ProfilerActivity
 
 def tracefunc(frame, event, arg, indent=[0]):
       if event == "call":
@@ -32,13 +33,12 @@ def main(name, model_name, batch_size):
     out_deg = g.out_degrees()
 
     # Let's use top 20% of node features for static cache
-    _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.20), sorted=False)
+    _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.0), sorted=False)
     feat_server.set_static_cache(indices, ['feat'])
     print('Caching', indices.shape[0], 'nodes')
 
     # Convert our graph into just a "logical" graph, all features live in the feature server
     g = dgl.graph(g.edges())
-    g.ndata['orig_id'] = torch.arange(g.num_nodes())
 
     # Model goes on DEVICE
     model = load_model(model_name, in_size, out_size).to(device)
@@ -90,13 +90,12 @@ def main(name, model_name, batch_size):
                 # Create first layer message flow graph by looking at required neighbors
                 frontier = dgl.sampling.sample_neighbors(g, required_nodes.unique(), -1)
                 first_mfg = dgl.to_block(frontier, torch.cat((required_nodes.unique(), new_nid))) # Need to do cat here as should have target node
-
                 # Create a message flow graph using the new edges
                 mfg = dgl.graph((required_nodes, torch.repeat_interleave(new_nid, interleave_count)))
                 last_mfg = dgl.to_block(mfg, new_nid)
-            
-            mfgs.append(first_mfg)
-            mfgs.append(last_mfg)
+                
+                mfgs.append(first_mfg)
+                mfgs.append(last_mfg)
 
             with Timer(name="CPU-GPU copy", track_cuda=True):
                 if device == 'cpu':
@@ -107,7 +106,12 @@ def main(name, model_name, batch_size):
                     # mfgs[0] = mfgs[0].to(device)
                     # mfgs[1] = mfgs[1].to(device)
                     # inputs = mfgs[0].srcdata['feat']
-                    inputs = feat_server.get_features(mfgs[0].ndata['orig_id']['_N'], feats=['feat'])['feat']
+                    with Timer("weird index"):
+                        # print(frontier.edata['_ID'])
+                        # _, required_feats = g.find_edges(frontier.edata['_ID'])
+                        # required_feats = required_feats.unique()
+                        required_feats = mfgs[0].ndata['_ID']['_N']
+                    inputs = feat_server.get_features(required_feats, feats=['feat'])['feat']
                     mfgs[0] = mfgs[0].to(device)
                     mfgs[1] = mfgs[1].to(device)
 
@@ -116,13 +120,19 @@ def main(name, model_name, batch_size):
 
     print_timer_info()
     # TODO parameterize output path
-    export_timer_info(f'benchmark/data/cache_breakdown/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
+    # export_timer_info(f'benchmark/data/cache_breakdown/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
-    models = ['gcn']#, 'sage', 'gat']
-    names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
-    batch_sizes = [1, 64, 128, 256]
-    for model in models:
-        for name in names:
-            for batch_size in batch_sizes:
-                main(name=name, model_name=model, batch_size=batch_size)
+    # main('cora', 'gcn', 256)    
+    # with profile(activities=[]) as prof:
+        # main('ogbn-papers100M', 'gcn', 256)
+
+    # prof.export_chrome_trace("trace.json")
+    main('ogbn-papers100M', 'gcn', 256)
+    # models = ['gcn']#, 'sage', 'gat']
+    # names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
+    # batch_sizes = [1, 64, 128, 256]
+    # for model in models:
+    #     for name in names:
+    #         for batch_size in batch_sizes:
+    #             main(name=name, model_name=model, batch_size=batch_size)
