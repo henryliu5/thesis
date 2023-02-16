@@ -1,6 +1,7 @@
 import torch
 import dgl
 from typing import List
+from fast_inference.timer import Timer
 
 class FeatureServer:
     def __init__(self, g: dgl.DGLGraph, device: torch.device or str, profile_hit_rate = False):
@@ -21,6 +22,10 @@ class FeatureServer:
         self.requests = 0
         self.cache_hits = 0
 
+        # NOTE allocate "small" pinned buffers to place features that will be transferred
+        # TODO turn this into a dictionary of feats and make work for any graph
+        self.orig_pinned_feature_output = torch.empty((150_000, g.ndata['feat'].shape[1]), dtype=torch.float, pin_memory=True)
+
     def get_features(self, node_ids: torch.LongTensor, feats: List[str]):
         """Get features for a list of nodes.
 
@@ -30,33 +35,57 @@ class FeatureServer:
             node_ids (torch.Tensor): A 1-D tensor of node IDs.
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
-        res = {}
-        # Used to mask this particular request - not to mask the cache!!
-        gpu_mask = self.nid_is_on_gpu[node_ids]
-        cpu_mask = ~gpu_mask
+        with Timer('get_features()'):
+            res = {}
 
-        if self.profile:
-            self.requests += node_ids.shape[0]
-            self.cache_hits += gpu_mask.long().sum()
+            # Used to mask this particular request - not to mask the cache!!
+            with Timer('compute gpu/cpu mask'):
+                gpu_mask = self.nid_is_on_gpu[node_ids]
+                cpu_mask = ~gpu_mask
 
-        for feat in feats:
-            feat_shape = list(self.g.ndata[feat].shape[1:])
-            # Create tensor with shape [number of nodes] x feature shape to hold result
-            res_tensor = torch.zeros(
-                tuple([node_ids.shape[0]] + feat_shape), device=self.device)
+            if self.profile:
+                self.requests += node_ids.shape[0]
+                self.cache_hits += gpu_mask.long().sum()
 
-            # Start copy to GPU mem
-            required_cpu_features = self.g.ndata[feat][node_ids[cpu_mask]]
-            res_tensor[cpu_mask] = required_cpu_features.to(
-                self.device, non_blocking=True)
+            for feat in feats:
+                feat_shape = list(self.g.ndata[feat].shape[1:])
+                with Timer('allocate res tensor', track_cuda = True):
+                    # Create tensor with shape [number of nodes] x feature shape to hold result
+                    res_tensor = torch.zeros(
+                        tuple([node_ids.shape[0]] + feat_shape), device=self.device)
 
-            # Features from GPU mem
-            # self.cache_mapping maps the global node id to the respective index in the cache
-            if feat in self.cache: # hacky drop in for torch.any(gpu_mask)
-                required_gpu_features = self.cache[feat][self.cache_mapping[node_ids[gpu_mask]]]
-                res_tensor[gpu_mask] = required_gpu_features
-            
-            res[feat] = res_tensor
+                # Start copy to GPU mem
+                with Timer('mask cpu feats'):
+                    m = node_ids[cpu_mask]
+                    # Perform resizing if necessary
+                    if m.shape[0] > self.orig_pinned_feature_output.shape[0]:
+                        self.orig_pinned_feature_output = self.orig_pinned_feature_output.resize_((m.shape[0], self.orig_pinned_feature_output.shape[1]))
+                    required_cpu_features = self.orig_pinned_feature_output.narrow(0, 0, m.shape[0])
+                with Timer('index feats'):
+                    # print('feat shape', self.feats.shape, 'device', self.feats.device, self.feats.is_contiguous())
+                    # print('m shape', m.shape, 'device', m.device, m.is_contiguous())
+                    # print('type self.g.ndata', type(self.feats))
+                    # print('type', type(self.g.ndata[feat]))
+                    # s = time.time()
+
+
+                    torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
+                    # print(self.feats.shape, self.feats, self.feats.device)
+                    # print(m.shape, m, m.device)
+                    # required_cpu_features = self.feats[m]
+                    # required_cpu_features = torch.index_select(self.feats, 0, m)
+                with Timer('actual copy', track_cuda=True):
+                    res_tensor[cpu_mask] = required_cpu_features.to(
+                        self.device, non_blocking=False)
+
+                with Timer('move cached features', track_cuda=True):
+                    # Features from GPU mem
+                    # self.cache_mapping maps the global node id to the respective index in the cache
+                    if feat in self.cache: # hacky drop in for torch.any(gpu_mask)
+                        required_gpu_features = self.cache[feat][self.cache_mapping[node_ids[gpu_mask]]]
+                        res_tensor[gpu_mask] = required_gpu_features
+                
+                res[feat] = res_tensor
 
         return res
 

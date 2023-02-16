@@ -6,20 +6,13 @@ import dgl
 import torch
 from tqdm import tqdm
 from torch.profiler import profile, record_function, ProfilerActivity
-
-def tracefunc(frame, event, arg, indent=[0]):
-      if event == "call":
-          indent[0] += 2
-          print("-" * indent[0] + "> call function", frame.f_code.co_name)
-      elif event == "return":
-          print("<" + "-" * indent[0], "exit function", frame.f_code.co_name)
-          indent[0] -= 2
-      return tracefunc
+import gc
 
 device = 'cuda'
 
 @torch.no_grad()
-def main(name, model_name, batch_size):
+def main(name, model_name, batch_size, dir = None):
+    torch.manual_seed(0)
     BATCH_SIZE = batch_size
     enable_timers()
     clear_timers()
@@ -31,11 +24,13 @@ def main(name, model_name, batch_size):
     # Set up feature server
     feat_server = FeatureServer(g, 'cuda')
     out_deg = g.out_degrees()
-
     # Let's use top 20% of node features for static cache
-    _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.0), sorted=False)
+    _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.2), sorted=False)
+    del out_deg
     feat_server.set_static_cache(indices, ['feat'])
     print('Caching', indices.shape[0], 'nodes')
+    del indices
+    gc.collect()
 
     # Convert our graph into just a "logical" graph, all features live in the feature server
     g = dgl.graph(g.edges())
@@ -111,28 +106,31 @@ def main(name, model_name, batch_size):
                         # _, required_feats = g.find_edges(frontier.edata['_ID'])
                         # required_feats = required_feats.unique()
                         required_feats = mfgs[0].ndata['_ID']['_N']
+                        # required_feats = torch.randint(0, 111059956, (124364,))
                     inputs = feat_server.get_features(required_feats, feats=['feat'])['feat']
                     mfgs[0] = mfgs[0].to(device)
                     mfgs[1] = mfgs[1].to(device)
 
-            with Timer(name='model', track_cuda=True):
-                model(mfgs, inputs)
+                with Timer(name='model', track_cuda=True):
+                    x = model(mfgs, inputs)
+
+                    # Force sync
+                    x.cpu()
 
     print_timer_info()
-    # TODO parameterize output path
-    # export_timer_info(f'benchmark/data/cache_breakdown/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
+    if dir != None:
+        export_timer_info(f'{dir}/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
-    # main('cora', 'gcn', 256)    
-    # with profile(activities=[]) as prof:
-        # main('ogbn-papers100M', 'gcn', 256)
-
-    # prof.export_chrome_trace("trace.json")
-    main('ogbn-papers100M', 'gcn', 256)
-    # models = ['gcn']#, 'sage', 'gat']
-    # names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
-    # batch_sizes = [1, 64, 128, 256]
-    # for model in models:
-    #     for name in names:
-    #         for batch_size in batch_sizes:
-    #             main(name=name, model_name=model, batch_size=batch_size)
+    # main('ogbn-papers100M', 'gcn', 128, dir='benchmark/data/new_index_select')
+    # exit()
+    models = ['gcn']#, 'sage', 'gat']
+    names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
+    batch_sizes = [1, 64, 128, 256]
+    for model in models:
+        for name in names:
+            for batch_size in batch_sizes:
+                main(name=name, model_name=model, batch_size=batch_size, dir='benchmark/data/new_index_select')
+                gc.collect()
+                gc.collect()
+                gc.collect()

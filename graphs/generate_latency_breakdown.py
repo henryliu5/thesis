@@ -35,8 +35,9 @@ def plot_latency_breakdown(model_name, path):
     avg_df = df.groupby(['name', 'batch_size'], as_index=False).mean()
     print(avg_df)
     # Compute percentages of each type
-    avg_df[['(cpu) sampling', 'CPU-GPU copy', 'model']] = avg_df[['(cpu) sampling',
-                                                                  'CPU-GPU copy', 'model']].div(avg_df.total, axis=0).mul(100)
+    # NOTE comment in below line for percetanges, will prob want to update label too
+    # avg_df[['(cpu) sampling', 'CPU-GPU copy', 'model']] = avg_df[['(cpu) sampling',
+                                                                #   'CPU-GPU copy', 'model']].div(avg_df.total, axis=0).mul(100)
     melted = avg_df.melt(id_vars=['name', 'batch_size'],
                          value_vars=['(cpu) sampling',
                                      'CPU-GPU copy', 'model'],
@@ -64,7 +65,7 @@ def plot_latency_breakdown(model_name, path):
         ax.bar(batch_sizes, sampling, width,
                label='(cpu) sampling', bottom=np.add(model, cg_copy))
 
-        ax.set_ylabel('% req. time')
+        ax.set_ylabel('time (s)')
         ax.set_xlabel('batch size')
         ax.set_title(name)
 
@@ -83,7 +84,7 @@ def plot_latency_breakdown(model_name, path):
 
 
 if __name__ == '__main__':
-    path = 'benchmark/data/timing_breakdown'
+    path = 'benchmark/data/new_baseline'
     plot_latency_breakdown('GCN', path)
-    # plot_latency_breakdown('SAGE')
-    # plot_latency_breakdown('GAT')
+    plot_latency_breakdown('SAGE', path)
+    plot_latency_breakdown('GAT', path)

@@ -20,7 +20,7 @@ def plot_speedup(model_name, cache_path, baseline_path):
 
     baseline_df = load_df(model_name, baseline_path).groupby(['name', 'batch_size']).mean()
     cache_df = load_df(model_name, cache_path).groupby(['name', 'batch_size']).mean()
-
+    # cache_df = cache_df.drop(columns=['weird index', 'compute gpu/cpu mask', 'get_features()', 'mask cpu feats', 'allocate res tensor'])
     print(baseline_df)
     print(cache_df)
     # Compute speedup
@@ -110,8 +110,8 @@ def plot_speedup(model_name, cache_path, baseline_path):
 
 
 if __name__ == '__main__':
-    cache_path = 'benchmark/data/cache_breakdown'
-    baseline_path = 'benchmark/data/timing_breakdown'
+    cache_path = 'benchmark/data/new_index_select'
+    baseline_path = 'benchmark/data/new_baseline'
     plot_speedup('GCN', cache_path, baseline_path)
     # plot_latency_breakdown('SAGE')
     # plot_latency_breakdown('GAT')
