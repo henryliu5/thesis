@@ -7,7 +7,7 @@ def test_inference_dataset_reload():
     # graph2 should be loaded from disk
     graph2 = InferenceDataset('reddit', 0.1, verbose=True)
 
-    assert(graph1.num_infer_targets == graph2.num_infer_targets)
+    assert(graph1._num_infer_targets == graph2._num_infer_targets)
     assert(th.all(th.eq(graph1.trace_nids, graph2.trace_nids)))
     assert(th.all(th.eq(graph1.trace_features, graph2.trace_features)))
     # TODO test edges are equal, need to go through list of dictionaries
@@ -17,7 +17,7 @@ def test_inference_dataset_partition():
     pruned_g = infer_data[0]
     print(pruned_g)
     print(pruned_g.num_nodes())
-    print(infer_data.num_infer_targets)
+    print(infer_data._num_infer_targets)
 
     # 1. Inference targets will be "present" in the pruned graph to preserve node ids
     assert(th.all(pruned_g.has_nodes(infer_data.trace_nids)))

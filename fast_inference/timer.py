@@ -16,7 +16,6 @@ def enable_timers():
 
 @contextmanager
 def Timer(name, track_cuda = False):
-    track_cuda = False
     global TRACE_ENABLED
     if TRACE_ENABLED:
         with record_function(name):
@@ -26,7 +25,7 @@ def Timer(name, track_cuda = False):
                     end = torch.cuda.Event(enable_timing=True)
                     start.record()
                 else:
-                    start_time = time.time()
+                    start_time = time.perf_counter()
                 yield
             finally:
                 if name not in TRACES:
@@ -43,8 +42,10 @@ def Timer(name, track_cuda = False):
                         EVENT_CLOSURES[name] = []
                     EVENT_CLOSURES[name].append(event_end_closure)
                 else:
-                    end_time = time.time()
+                    end_time = time.perf_counter()
                     TRACES[name].append(end_time - start_time)
+    else:
+        yield
 
 def clear_timers():
     global TRACES

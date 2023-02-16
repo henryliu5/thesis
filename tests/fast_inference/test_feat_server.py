@@ -31,3 +31,5 @@ def test_feat_server():
     assert (torch.all(torch.eq(feats['x'].cpu(), x_feats[torch.LongTensor([0, 1, 2])])))
     assert (torch.all(torch.eq(feats['y'].cpu(), y_feats[torch.LongTensor([0, 1, 2])])))
 
+if __name__ == '__main__':
+    test_feat_server()
