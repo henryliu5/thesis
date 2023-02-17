@@ -5,12 +5,11 @@ import matplotlib.pyplot as plt
 plt.style.use('seaborn')
 import os
 
-def plot_latency_breakdown(model_name, path):
-    names = ['reddit', 'cora', 'ogbn-products']#, 'ogbn-papers100M']
+def plot_latency_breakdown(model_name, graph_names, path, title = ""):
     batch_sizes = [1, 64, 128, 256]
 
     dfs = []
-    for name in names:
+    for name in graph_names:
         for batch_size in batch_sizes:
             dfs.append(pd.read_csv(os.path.join(
                 path, model_name, f'{name}-{batch_size}.csv')))
@@ -50,7 +49,7 @@ def plot_latency_breakdown(model_name, path):
 
     fig, axs = plt.subplots(2, 2)
     width = 0.35
-    for i, name in enumerate(names):
+    for i, name in enumerate(graph_names):
         ax = axs[i // 2][i % 2]
         ax.set_ylim(0, axis_height[name])
         batch_sizes = ['1', '64', '128', '256']
@@ -94,14 +93,21 @@ def plot_latency_breakdown(model_name, path):
     # Shift plots down
     fig.subplots_adjust(top=0.85)
     # Set big figure title
-    fig.suptitle(f'{model_name} inference latency', fontsize=16)
+    fig.suptitle(f'{model_name} inference latency {title}', fontsize=16)
     # Save
     plt.savefig(f'{model_name}_latency_breakdown.png',
                 bbox_inches='tight', dpi=250)
 
 
 if __name__ == '__main__':
-    path = 'benchmark/data/new_baseline'
-    plot_latency_breakdown('GCN', path)
-    # plot_latency_breakdown('SAGE', path)
-    # plot_latency_breakdown('GAT', path)
+    # names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
+    # path = 'benchmark/data/new_baseline'
+    # title = ""
+
+    names = ['reddit', 'cora', 'ogbn-products']
+    path = 'benchmark/data/new_cache_gpu'
+    title = "(GPU sampling, 20% static cache)"
+
+    plot_latency_breakdown('GCN', names, path, title)
+    # plot_latency_breakdown('SAGE', names, path, title)
+    # plot_latency_breakdown('GAT', names, path, title)

@@ -26,7 +26,7 @@ class FeatureServer:
         # TODO turn this into a dictionary of feats and make work for any graph
         self.orig_pinned_feature_output = torch.empty((150_000, g.ndata['feat'].shape[1]), dtype=torch.float, pin_memory=True)
 
-    def get_features(self, node_ids: torch.LongTensor, feats: List[str]):
+    def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs):
         """Get features for a list of nodes.
 
         Features are fetched from GPU memory if cached, otherwise from CPU memory.
@@ -36,6 +36,7 @@ class FeatureServer:
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
         with Timer('get_features()'):
+            node_ids = node_ids.cpu()
             res = {}
 
             # Used to mask this particular request - not to mask the cache!!
@@ -61,22 +62,17 @@ class FeatureServer:
                     if m.shape[0] > self.orig_pinned_feature_output.shape[0]:
                         self.orig_pinned_feature_output = self.orig_pinned_feature_output.resize_((m.shape[0], self.orig_pinned_feature_output.shape[1]))
                     required_cpu_features = self.orig_pinned_feature_output.narrow(0, 0, m.shape[0])
-                with Timer('index feats'):
-                    # print('feat shape', self.feats.shape, 'device', self.feats.device, self.feats.is_contiguous())
-                    # print('m shape', m.shape, 'device', m.device, m.is_contiguous())
-                    # print('type self.g.ndata', type(self.feats))
-                    # print('type', type(self.g.ndata[feat]))
-                    # s = time.time()
-
-
+                with Timer('feature gather'):
                     torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
-                    # print(self.feats.shape, self.feats, self.feats.device)
-                    # print(m.shape, m, m.device)
-                    # required_cpu_features = self.feats[m]
-                    # required_cpu_features = torch.index_select(self.feats, 0, m)
-                with Timer('actual copy', track_cuda=True):
+                    # NOTE Can remove above for "slow mode"
+                    # required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
+
+                with Timer('CPU-GPU copy', track_cuda=True):
+                    # Copy CPU features
                     res_tensor[cpu_mask] = required_cpu_features.to(
-                        self.device, non_blocking=False)
+                        self.device, non_blocking=True)
+                    # Copy MFGs
+                    mfgs = [mfg.to(self.device) for mfg in mfgs]
 
                 with Timer('move cached features', track_cuda=True):
                     # Features from GPU mem
@@ -87,7 +83,7 @@ class FeatureServer:
                 
                 res[feat] = res_tensor
 
-        return res
+        return res, mfgs
 
     def set_static_cache(self, node_ids: torch.Tensor, feats: List[str]):
         """Define a static cache using the given node ids.

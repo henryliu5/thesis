@@ -11,8 +11,7 @@ import gc
 device = 'cuda'
 
 @torch.no_grad()
-def main(name, model_name, batch_size, dir = None):
-    torch.manual_seed(0)
+def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     BATCH_SIZE = batch_size
     enable_timers()
     clear_timers()
@@ -34,6 +33,9 @@ def main(name, model_name, batch_size, dir = None):
 
     # Convert our graph into just a "logical" graph, all features live in the feature server
     g = dgl.graph(g.edges())
+
+    if use_gpu_sampling:
+        g = g.to(device)
 
     # Model goes on DEVICE
     model = load_model(model_name, in_size, out_size).to(device)
@@ -74,63 +76,65 @@ def main(name, model_name, batch_size, dir = None):
 
             mfgs = []
 
-            with Timer('(cpu) sampling'):
+            with Timer('sampling', track_cuda=use_gpu_sampling):
                 # TODO test this batching very carefully
                 # TODO reason to be suspicious: https://github.com/dmlc/dgl/issues/4512
                 required_nodes = torch.cat(adj_nids)
+                required_nodes_unique = required_nodes.unique()
                 interleave_count = torch.tensor(sizes)
                 # required_nodes = torch.cat([infer_data.trace_edges[idx]["in"] for idx in range(i, i+BATCH_SIZE)])
                 # interleave_count = torch.tensor([infer_data.trace_edges[idx]["in"].shape[0] for idx in range(i, i+BATCH_SIZE)])
 
                 # Create first layer message flow graph by looking at required neighbors
-                frontier = dgl.sampling.sample_neighbors(g, required_nodes.unique(), -1)
-                first_mfg = dgl.to_block(frontier, torch.cat((required_nodes.unique(), new_nid))) # Need to do cat here as should have target node
+                all_seeds = torch.cat((required_nodes_unique, new_nid))
+
+                if use_gpu_sampling:
+                    # NOTE roughly 10x faster
+                    frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique.to(device), -1)
+                else:
+                    frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique, -1)
+
+                first_mfg = dgl.to_block(frontier, all_seeds) # Need to do cat here as should have target node
+
                 # Create a message flow graph using the new edges
                 mfg = dgl.graph((required_nodes, torch.repeat_interleave(new_nid, interleave_count)))
                 last_mfg = dgl.to_block(mfg, new_nid)
-                
+            
                 mfgs.append(first_mfg)
                 mfgs.append(last_mfg)
 
-            with Timer(name="CPU-GPU copy", track_cuda=True):
-                if device == 'cpu':
-                    # TODO understand the overhead of this first access
-                    inputs = mfgs[0].srcdata['feat']
-                else:
-                    # Graph.to(device) moves features as well
-                    # mfgs[0] = mfgs[0].to(device)
-                    # mfgs[1] = mfgs[1].to(device)
-                    # inputs = mfgs[0].srcdata['feat']
-                    with Timer("weird index"):
-                        # print(frontier.edata['_ID'])
-                        # _, required_feats = g.find_edges(frontier.edata['_ID'])
-                        # required_feats = required_feats.unique()
-                        required_feats = mfgs[0].ndata['_ID']['_N']
-                        # required_feats = torch.randint(0, 111059956, (124364,))
-                    inputs = feat_server.get_features(required_feats, feats=['feat'])['feat']
-                    mfgs[0] = mfgs[0].to(device)
-                    mfgs[1] = mfgs[1].to(device)
+            with Timer(name="dataloading", track_cuda=True):
+                required_feats = mfgs[0].ndata['_ID']['_N']
+                # required_feats = torch.randint(0, 111059956, (124364,))
+                inputs, mfgs = feat_server.get_features(required_feats, feats=['feat'], mfgs=mfgs)
+                inputs = inputs['feat']
 
-                with Timer(name='model', track_cuda=True):
-                    x = model(mfgs, inputs)
-
-                    # Force sync
-                    x.cpu()
+            with Timer(name='model', track_cuda=True):
+                x = model(mfgs, inputs)
+                # Force sync
+                x.cpu()
 
     print_timer_info()
     if dir != None:
         export_timer_info(f'{dir}/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
-    # main('ogbn-papers100M', 'gcn', 128, dir='benchmark/data/new_index_select')
-    # exit()
+    # main('cora', 'gcn', 256, True)#, dir='benchmark/data/new_index_select')
     models = ['gcn']#, 'sage', 'gat']
     names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
+
+    use_gpu_sampling = True
+    if use_gpu_sampling:
+        path = 'benchmark/data/new_cache_gpu'
+        names = ['reddit', 'cora', 'ogbn-products']
+    else:
+        path = 'benchmark/data/new_cache'
+
     for model in models:
         for name in names:
             for batch_size in batch_sizes:
-                main(name=name, model_name=model, batch_size=batch_size, dir='benchmark/data/new_index_select')
+                main(name=name, model_name=model, batch_size=batch_size, dir=path, use_gpu_sampling=use_gpu_sampling)
                 gc.collect()
                 gc.collect()
                 gc.collect()

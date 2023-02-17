@@ -102,21 +102,22 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
                 mfgs.append(first_mfg)
                 mfgs.append(last_mfg)
 
-            with Timer('feature gather'):
-                required_feats = first_mfg.ndata['_ID']['_N']
-                inputs = g.ndata['feat'][required_feats.cpu()]
+            with Timer('dataloading', track_cuda=True):
+                with Timer('feature gather'):
+                    required_feats = first_mfg.ndata['_ID']['_N']
+                    inputs = g.ndata['feat'][required_feats.cpu()]
 
-            with Timer(name="CPU-GPU copy", track_cuda=True):
-                if device == 'cpu':
-                    # TODO understand the overhead of this first access
-                    inputs = mfgs[0].srcdata['feat']
-                else:
-                    # NOTE When using GPU sampling the MFGs are already on GPU
-                    # Graph.to(device) moves features as well
-                    mfgs[0] = mfgs[0].to(device)
-                    mfgs[1] = mfgs[1].to(device)
+                with Timer(name="CPU-GPU copy", track_cuda=True):
+                    if device == 'cpu':
+                        # TODO understand the overhead of this first access
+                        inputs = mfgs[0].srcdata['feat']
+                    else:
+                        # NOTE When using GPU sampling the MFGs are already on GPU
+                        # Graph.to(device) moves features as well
+                        mfgs[0] = mfgs[0].to(device)
+                        mfgs[1] = mfgs[1].to(device)
 
-                    inputs = inputs.to(device)
+                        inputs = inputs.to(device)
 
             with Timer(name='model', track_cuda=True):
                 x = model(mfgs, inputs)
@@ -129,16 +130,17 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
 
 if __name__ == '__main__':
     # main('ogbn-papers100M', 'gcn', 256)
-    models = ['gcn', 'sage', 'gat']
-    names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
 
     use_gpu_sampling = True
     if use_gpu_sampling:
         path = 'benchmark/data/new_baseline_gpu'
         models = ['gcn']
+        names = ['reddit', 'cora', 'ogbn-products']
     else:
         path = 'benchmark/data/new_baseline'
+        models = ['gcn', 'sage', 'gat']
+        names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
 
     for model in models:
         for name in names:
