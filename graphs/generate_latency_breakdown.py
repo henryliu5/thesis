@@ -2,10 +2,11 @@ import numpy as np
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
+plt.style.use('seaborn')
 import os
 
 def plot_latency_breakdown(model_name, path):
-    names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
+    names = ['reddit', 'cora', 'ogbn-products']#, 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
 
     dfs = []
@@ -36,18 +37,22 @@ def plot_latency_breakdown(model_name, path):
     print(avg_df)
     # Compute percentages of each type
     # NOTE comment in below line for percetanges, will prob want to update label too
-    # avg_df[['(cpu) sampling', 'CPU-GPU copy', 'model']] = avg_df[['(cpu) sampling',
+    # avg_df[['sampling', 'CPU-GPU copy', 'model']] = avg_df[['sampling',
                                                                 #   'CPU-GPU copy', 'model']].div(avg_df.total, axis=0).mul(100)
     melted = avg_df.melt(id_vars=['name', 'batch_size'],
-                         value_vars=['(cpu) sampling',
-                                     'CPU-GPU copy', 'model'],
+                         value_vars=['sampling',
+                                     'CPU-GPU copy', 'feature gather', 'model', 'total'],
                          var_name="type",
                          value_name="percentage", ignore_index=True)
+
+    # Dict for plot axis - this way all plots have the same scale
+    axis_height = {'reddit': 2.5, 'cora': 0.08, 'ogbn-products': 0.2, 'ogbn-papers100M': 0.030}
 
     fig, axs = plt.subplots(2, 2)
     width = 0.35
     for i, name in enumerate(names):
         ax = axs[i // 2][i % 2]
+        ax.set_ylim(0, axis_height[name])
         batch_sizes = ['1', '64', '128', '256']
         local_df = melted.loc[melted['name'] == name]
         # for b in batch_sizes:
@@ -57,13 +62,25 @@ def plot_latency_breakdown(model_name, path):
                              == 'model']['percentage'].to_numpy()
         cg_copy = batch_df.loc[batch_df['type'] ==
                                'CPU-GPU copy']['percentage'].to_numpy()
+        feat_gather = batch_df.loc[batch_df['type'] ==
+                               'feature gather']['percentage'].to_numpy()
         sampling = batch_df.loc[batch_df['type'] ==
-                                '(cpu) sampling']['percentage'].to_numpy()
+                                'sampling']['percentage'].to_numpy()
+        total = batch_df.loc[batch_df['type'] ==
+                        'total']['percentage'].to_numpy()
+
+        # Add total with label
+        # total_bar = ax.bar(batch_sizes, total, width, label='total')
+        
 
         ax.bar(batch_sizes, model, width, label='model')
         ax.bar(batch_sizes, cg_copy, width, label='CPU-GPU copy', bottom=model)
-        ax.bar(batch_sizes, sampling, width,
-               label='(cpu) sampling', bottom=np.add(model, cg_copy))
+        ax.bar(batch_sizes, feat_gather, width,
+               label='feature gather', bottom=np.add(model, cg_copy))
+        sampling_bar = ax.bar(batch_sizes, sampling, width,
+               label='sampling', bottom=model + cg_copy + feat_gather)
+
+        ax.bar_label(sampling_bar, labels=[f'{(x):.3f}' for x in total])
 
         ax.set_ylabel('time (s)')
         ax.set_xlabel('batch size')
@@ -72,7 +89,7 @@ def plot_latency_breakdown(model_name, path):
     # Get just the three labels - not 3 x 4
     handles, labels = ax.get_legend_handles_labels()
     # Place legend in right spot (bottom)
-    fig.legend(handles, labels, bbox_to_anchor=(0.87, 0),  ncol=3)
+    fig.legend(handles[::-1], labels[::-1], bbox_to_anchor=(0.85, 0),  ncol=4)
     fig.tight_layout()
     # Shift plots down
     fig.subplots_adjust(top=0.85)
@@ -80,11 +97,11 @@ def plot_latency_breakdown(model_name, path):
     fig.suptitle(f'{model_name} inference latency', fontsize=16)
     # Save
     plt.savefig(f'{model_name}_latency_breakdown.png',
-                bbox_inches='tight', dpi=100)
+                bbox_inches='tight', dpi=250)
 
 
 if __name__ == '__main__':
     path = 'benchmark/data/new_baseline'
     plot_latency_breakdown('GCN', path)
-    plot_latency_breakdown('SAGE', path)
-    plot_latency_breakdown('GAT', path)
+    # plot_latency_breakdown('SAGE', path)
+    # plot_latency_breakdown('GAT', path)

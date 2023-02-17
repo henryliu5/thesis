@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import os
 
 def load_df(model_name, path):
-    names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
+    names = ['reddit', 'cora', 'ogbn-products']#, 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
 
     dfs = []
@@ -110,7 +110,7 @@ def plot_speedup(model_name, cache_path, baseline_path):
 
 
 if __name__ == '__main__':
-    cache_path = 'benchmark/data/new_index_select'
+    cache_path = 'benchmark/data/new_baseline_gpu'
     baseline_path = 'benchmark/data/new_baseline'
     plot_speedup('GCN', cache_path, baseline_path)
     # plot_latency_breakdown('SAGE')
