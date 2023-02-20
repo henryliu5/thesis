@@ -1,19 +1,12 @@
 from fast_inference.dataset import InferenceDataset
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
+from fast_inference.feat_server import FeatureServer
 import dgl
 import torch
 from tqdm import tqdm
+from torch.profiler import profile, record_function, ProfilerActivity
 import gc
-
-def tracefunc(frame, event, arg, indent=[0]):
-      if event == "call":
-          indent[0] += 2
-          print("-" * indent[0] + "> call function", frame.f_code.co_name)
-      elif event == "return":
-          print("<" + "-" * indent[0], "exit function", frame.f_code.co_name)
-          indent[0] -= 2
-      return tracefunc
 
 device = 'cuda'
 
@@ -24,15 +17,26 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     clear_timers()
     infer_data = InferenceDataset(name, 0.1, force_reload=False, verbose=True)
     g = infer_data[0]
-    logical_g = dgl.graph(g.edges())
-    if use_gpu_sampling:
-        logical_g = logical_g.to(device)
-    else:
-        g.pin_memory_()
-        assert g.is_pinned()
-
     in_size = g.ndata["feat"].shape[1]
     out_size = infer_data.num_classes
+
+    # Set up feature server
+    feat_server = FeatureServer(g, 'cuda', ['feat'])
+    out_deg = g.out_degrees()
+    # Let's use top 20% of node features for static cache
+    _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.2), sorted=False)
+    del out_deg
+    feat_server.set_static_cache(indices, ['feat'])
+    print('Caching', indices.shape[0], 'nodes')
+    del indices
+    gc.collect()
+
+    # Convert our graph into just a "logical" graph, all features live in the feature server
+    g = dgl.graph(g.edges())
+
+    if use_gpu_sampling:
+        g = g.to(device)
+
     # Model goes on DEVICE
     model = load_model(model_name, in_size, out_size).to(device)
     model.eval()
@@ -61,9 +65,6 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
                 s.add(infer_data.trace_nids[idx].item())
         
         new_nid = torch.tensor(new_nid)
-        # if use_gpu_sampling:
-        #     new_nid = new_nid.to(device)
-
         # assert(new_nid.shape == new_nid.unique().shape) 
         if BATCH_SIZE == 1:
             new_nid = new_nid.reshape(1)
@@ -89,9 +90,9 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
 
                 if use_gpu_sampling:
                     # NOTE roughly 10x faster
-                    frontier = dgl.sampling.sample_neighbors(logical_g, required_nodes_unique.to(device), -1)
+                    frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique.to(device), -1)
                 else:
-                    frontier = dgl.sampling.sample_neighbors(logical_g, required_nodes_unique, -1)
+                    frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique, -1)
 
                 first_mfg = dgl.to_block(frontier, all_seeds) # Need to do cat here as should have target node
 
@@ -102,22 +103,11 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
                 mfgs.append(first_mfg)
                 mfgs.append(last_mfg)
 
-            with Timer('dataloading', track_cuda=True):
-                with Timer('feature gather'):
-                    required_feats = first_mfg.ndata['_ID']['_N']
-                    inputs = g.ndata['feat'][required_feats.cpu()]
-
-                with Timer(name="CPU-GPU copy", track_cuda=True):
-                    if device == 'cpu':
-                        # TODO understand the overhead of this first access
-                        inputs = mfgs[0].srcdata['feat']
-                    else:
-                        # NOTE When using GPU sampling the MFGs are already on GPU
-                        # Graph.to(device) moves features as well
-                        mfgs[0] = mfgs[0].to(device)
-                        mfgs[1] = mfgs[1].to(device)
-
-                        inputs = inputs.to(device)
+            with Timer(name="dataloading", track_cuda=True):
+                required_feats = mfgs[0].ndata['_ID']['_N']
+                # required_feats = torch.randint(0, 111059956, (124364,))
+                inputs, mfgs = feat_server.get_features(required_feats, feats=['feat'], mfgs=mfgs)
+                inputs = inputs['feat']
 
             with Timer(name='model', track_cuda=True):
                 x = model(mfgs, inputs)
@@ -129,18 +119,17 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
         export_timer_info(f'{dir}/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
-    # main('ogbn-papers100M', 'gcn', 256)
+    # main('cora', 'gcn', 256, True)#, dir='benchmark/data/new_index_select')
+    models = ['gcn']#, 'sage', 'gat']
+    names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
 
     use_gpu_sampling = True
     if use_gpu_sampling:
-        path = 'benchmark/data/new_baseline_gpu'
-        models = ['gcn']
+        path = 'benchmark/data/new_cache_keyed_gpu'
         names = ['reddit', 'cora', 'ogbn-products']
     else:
-        path = 'benchmark/data/new_baseline'
-        models = ['gcn', 'sage', 'gat']
-        names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
+        path = 'benchmark/data/new_cache'
 
     for model in models:
         for name in names:
