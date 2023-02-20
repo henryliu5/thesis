@@ -21,7 +21,7 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     out_size = infer_data.num_classes
 
     # Set up feature server
-    feat_server = FeatureServer(g, 'cuda')
+    feat_server = FeatureServer(g, 'cuda', ['feat'])
     out_deg = g.out_degrees()
     # Let's use top 20% of node features for static cache
     _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.2), sorted=False)
@@ -126,7 +126,7 @@ if __name__ == '__main__':
 
     use_gpu_sampling = True
     if use_gpu_sampling:
-        path = 'benchmark/data/new_cache_gpu'
+        path = 'benchmark/data/new_cache_keyed_gpu'
         names = ['reddit', 'cora', 'ogbn-products']
     else:
         path = 'benchmark/data/new_cache'

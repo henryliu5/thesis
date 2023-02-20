@@ -13,7 +13,7 @@ def test_feat_server():
     g.ndata['y'] = y_feats
 
     assert (g.device == torch.device('cpu'))
-    server = FeatureServer(g, device=device)
+    server = FeatureServer(g, track_features=['x', 'y'], device=device)
 
     # Set the cache to be nodes 0, 2, 4
     server.set_static_cache(node_ids=torch.LongTensor([0, 2, 4]), feats=['x', 'y'])
@@ -21,7 +21,7 @@ def test_feat_server():
     assert (server.cache['x'].shape == torch.Size([3, 3]))
     assert (server.cache['y'].shape == torch.Size([3, 5, 4]))
 
-    feats = server.get_features(torch.LongTensor([0, 1, 2]), feats=['x', 'y'])
+    feats, _ = server.get_features(torch.LongTensor([0, 1, 2]), feats=['x', 'y'], mfgs=None)
     
     # Check feats are all on device
     assert(feats['x'].device == torch.device(device))

@@ -1,10 +1,10 @@
 import torch
 import dgl
-from typing import List
+from typing import List, Optional
 from fast_inference.timer import Timer
 
 class FeatureServer:
-    def __init__(self, g: dgl.DGLGraph, device: torch.device or str, profile_hit_rate = False):
+    def __init__(self, g: dgl.DGLGraph, device: torch.device or str, track_features: List[str], profile_hit_rate: bool = False, pinned_buf_size: int = 150_000):
         """ Initializes a new FeatureServer
 
         Args:
@@ -22,11 +22,14 @@ class FeatureServer:
         self.requests = 0
         self.cache_hits = 0
 
+        # Pinned memory buffers for placing gathered CPU features prior to CPU->GPU copy
+        self.pinned_buf_dict = {}
         # NOTE allocate "small" pinned buffers to place features that will be transferred
-        # TODO turn this into a dictionary of feats and make work for any graph
-        self.orig_pinned_feature_output = torch.empty((150_000, g.ndata['feat'].shape[1]), dtype=torch.float, pin_memory=True)
+        for feature in track_features:
+            # TODO make these buffers work with features that are not 1D (see pytest test)
+            self.pinned_buf_dict[feature] = torch.empty((pinned_buf_size, g.ndata[feature].shape[1]), dtype=torch.float, pin_memory=True)
 
-    def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs):
+    def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
         """Get features for a list of nodes.
 
         Features are fetched from GPU memory if cached, otherwise from CPU memory.
@@ -35,6 +38,9 @@ class FeatureServer:
             node_ids (torch.Tensor): A 1-D tensor of node IDs.
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
+        if mfgs is None:
+            mfgs = []
+
         with Timer('get_features()'):
             node_ids = node_ids.cpu()
             res = {}
@@ -59,9 +65,9 @@ class FeatureServer:
                 with Timer('mask cpu feats'):
                     m = node_ids[cpu_mask]
                     # Perform resizing if necessary
-                    if m.shape[0] > self.orig_pinned_feature_output.shape[0]:
-                        self.orig_pinned_feature_output = self.orig_pinned_feature_output.resize_((m.shape[0], self.orig_pinned_feature_output.shape[1]))
-                    required_cpu_features = self.orig_pinned_feature_output.narrow(0, 0, m.shape[0])
+                    if m.shape[0] > self.pinned_buf_dict[feat].shape[0]:
+                        self.pinned_buf_dict[feat] = self.pinned_buf_dict[feat].resize_((m.shape[0], self.pinned_buf_dict[feat].shape[1]))
+                    required_cpu_features = self.pinned_buf_dict[feat].narrow(0, 0, m.shape[0])
                 with Timer('feature gather'):
                     torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
                     # NOTE Can remove above for "slow mode"
