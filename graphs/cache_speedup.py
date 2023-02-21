@@ -3,24 +3,14 @@ import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
 plt.style.use('seaborn')
-import os
-
-def load_df(model_name, path):
-    names = ['reddit', 'cora', 'ogbn-products']#, 'ogbn-papers100M']
-    batch_sizes = [1, 64, 128, 256]
-
-    dfs = []
-    for name in names:
-        for batch_size in batch_sizes:
-            dfs.append(pd.read_csv(os.path.join(
-                path, model_name, f'{name}-{batch_size}.csv')))
-
-    return pd.concat(dfs)
+from util import load_dfs
 
 def plot_speedup(model_name, cache_path, baseline_path, title = ""):
+    graph_names = ['reddit', 'cora', 'ogbn-products']#, 'ogbn-papers100M']
+    batch_sizes = [1, 64, 128, 256]
 
-    baseline_df = load_df(model_name, baseline_path).groupby(['name', 'batch_size']).mean()
-    cache_df = load_df(model_name, cache_path).groupby(['name', 'batch_size']).mean()
+    baseline_df = load_dfs(model_name, baseline_path, graph_names, batch_sizes).groupby(['name', 'batch_size']).mean()
+    cache_df = load_dfs(model_name, cache_path, graph_names, batch_sizes).groupby(['name', 'batch_size']).mean()
     # cache_df = cache_df.drop(columns=['weird index', 'compute gpu/cpu mask', 'get_features()', 'mask cpu feats', 'allocate res tensor'])
     print(baseline_df)
     print(cache_df)
