@@ -9,6 +9,28 @@ import torch as th
 import numpy as np
 from tqdm import tqdm
 from typing import List, Dict
+from dataclasses import dataclass
+import random
+
+
+@dataclass(frozen=True)
+class InferenceTrace:
+    """ Tensor of node IDs representing to inference targets in the trace"""
+    nids: th.Tensor
+    """ Tensor of features for each index in the trace"""
+    features: th.Tensor
+    """ Returns a list of dicts, each dict containing the in and out edges for a node in the trace.
+        Keys are 'in' and 'out', values are tensors of node IDs.
+    """
+    edges: List[Dict[str, th.Tensor]]
+
+    def __post_init__(self):
+        # Must all have same dimension
+        assert (self.nids.shape[0] == self.features.shape[0])
+        assert (self.features.shape[0] == len(self.edges))
+
+    def __len__(self):
+        return self.nids.shape[0]
 
 
 class InferenceDataset(DGLDataset):
@@ -37,8 +59,6 @@ class InferenceDataset(DGLDataset):
         Whether to print out progress information
     """
 
-    TRACE_LEN = 10000
-
     def __init__(self,
                  name,
                  target_percent,
@@ -53,7 +73,9 @@ class InferenceDataset(DGLDataset):
         self._target_percent = target_percent
         self._rand_seed = rand_seed
         self._verbose = verbose
-
+        th.manual_seed(rand_seed)
+        random.seed(rand_seed)
+        np.random.seed(rand_seed)
         super(InferenceDataset, self).__init__(name=f'inference_{name}_{target_percent}',
                                                url=None,
                                                raw_dir=raw_dir,
@@ -75,8 +97,7 @@ class InferenceDataset(DGLDataset):
 
         if os.path.exists(self.raw_path):
             return
-
-        makedirs(self.raw_dir)
+        makedirs(self.raw_path)
         self.download()
 
     def download(self):
@@ -93,8 +114,8 @@ class InferenceDataset(DGLDataset):
                 # Add reverse edges since ogbn-arxiv is unidirectional.
                 self._orig_graph = dgl.add_reverse_edges(self._orig_graph)
             self._num_classes = self._dataset.num_classes
-            return 
-        
+            return
+
         if self._orig_name == 'reddit':
             self._dataset = RedditDataset(verbose=self._verbose,
                                           **self._internal_kwargs)
@@ -112,24 +133,21 @@ class InferenceDataset(DGLDataset):
         """Split graph into training and inference nodes"""
 
         # TODO: Broken if load() happens to crash with force_reload off since this will be called but _download() will just return, so orig_graph won't exist
-        self.create_inference_partition()
-        self.create_inference_trace(self.TRACE_LEN)
+        self._create_inference_partition()
 
         self.graphs = [self._pruned_graph]
 
-    def create_inference_partition(self):
+    def _create_inference_partition(self):
+        self._num_infer_targets = int(
+            self._orig_graph.number_of_nodes() * self._target_percent)
+        self._infer_target_nids = th.randperm(self._orig_graph.number_of_nodes())[
+            :self._num_infer_targets]
 
-        infer_target_mask = th.BoolTensor(np.random.choice([False, True],
-                                                           size=(
-                                                               self._orig_graph.number_of_nodes(),),
-                                                           p=[1 - self._target_percent, self._target_percent]))
-        num_infer_targets = infer_target_mask.sum()
+        infer_target_mask = th.zeros(
+            self._orig_graph.number_of_nodes(), dtype=th.bool)
+        infer_target_mask[self._infer_target_nids] = True
         print(
-            f'Original graph nodes: {self._orig_graph.number_of_nodes()}, Inference target percent: {self._target_percent}, num_infer_targets: {num_infer_targets}')
-
-        id_arr = th.arange(self._orig_graph.number_of_nodes())
-        self._infer_target_nids = th.masked_select(id_arr, infer_target_mask)
-        self._num_infer_targets = infer_target_mask.sum()
+            f'Original graph nodes: {self._orig_graph.number_of_nodes()}, Inference target percent: {self._target_percent}, num_infer_targets: {self._num_infer_targets}')
 
         # 1. Remove edges between nodes that are inference targets
         #    This ensures that inference requests are independent
@@ -163,31 +181,73 @@ class InferenceDataset(DGLDataset):
         self._pruned_graph = dgl.edge_subgraph(
             self._orig_graph, eids_to_keep, relabel_nodes=False)
 
-    def create_inference_trace(self, trace_len: int):
+        self._get_inference_target_info()
+
+    def _get_inference_target_info(self):
+        """ Generate and store information related to inference targets on disk or
+            load it from disk. This includes features, nids, and edges for all inference targets.
+        """
+        infer_path = os.path.join(self.save_path, f'infer_info.pkl')
+
+        if os.path.exists(infer_path):
+            infer_info = load_info(infer_path)
+            self.infer_nids = infer_info['infer_nids']
+            self.infer_features = infer_info['infer_features']
+            self.infer_edges = infer_info['infer_edges']
+        else:
+            assert (hasattr(self, '_infer_target_nids')
+                    ), "Illegal state when creating inference trace, is the inference_dataset directory up to date?"
+            self.infer_nids = self._infer_target_nids
+            self.infer_features = self._orig_graph.ndata['feat'][self._infer_target_nids]
+            print('Generating edges for ALL inference targets:')
+            self.infer_edges = []
+            for i in tqdm(range(len(self.infer_nids))):
+                in_neighbors = self._orig_graph.in_edges(
+                    self.infer_nids[i], 'uv')[0]
+                out_neighbors = self._orig_graph.out_edges(
+                    self.infer_nids[i], 'uv')[1]
+                self.infer_edges.append(
+                    {'in': in_neighbors, 'out': out_neighbors})
+
+            save_info(infer_path, {'infer_nids': self.infer_nids,
+                                   'infer_features': self.infer_features,
+                                   'infer_edges': self.infer_edges})
+
+    def create_inference_trace(self, trace_len: int = 256_000) -> InferenceTrace:
         """Create a trace of inference requests
 
         Since self._orig_graph has had edges connecting inference targets removed,
         we can generate valid requests just by randomly selecting inference targets.
 
         Args:
-            trace_len (int): Length of trace to be generated
+            trace_len (int): Maximum length of trace to be generated
         """
-        print('Generating inference trace...')
-        self._trace_nids = th.tensor(np.random.choice(
-            self._infer_target_nids, size=(trace_len,), replace=True))
-        self._trace_features = self._orig_graph.ndata['feat'][self._trace_nids]
-        print('Generating edges:')
-        self._trace_edges = []
-        for i in tqdm(range(trace_len)):
-            in_neighbors = self._orig_graph.in_edges(
-                self._trace_nids[i], 'uv')[0]
-            out_neighbors = self._orig_graph.out_edges(
-                self._trace_nids[i], 'uv')[1]
-            self._trace_edges.append(
-                {'in': in_neighbors, 'out': out_neighbors})
+        # Load entire trace from disk if available
+        # Will be stored under path for dataset, file name denotes length
+        trace_path = os.path.join(self.save_path, f'trace_{trace_len}.pkl')
+        if os.path.exists(trace_path):
+            print('Loading trace from', trace_path)
+            return load_info(trace_path)['trace']
 
-        assert (len(self._trace_nids) == len(self._trace_features))
-        assert (len(self._trace_nids) == len(self._trace_edges))
+        self._get_inference_target_info()
+        assert (self.infer_nids.shape[0] == self.num_infer_targets)
+
+        trace_len = min(trace_len, self.num_infer_targets)
+        print(f'Generating inference trace of length {trace_len}...')
+        generated_indices = th.randperm(self.num_infer_targets)[:trace_len]
+
+        trace_nids = self.infer_nids[generated_indices]
+        trace_features = self.infer_features[generated_indices]
+
+        print('Generating edges:')
+        trace_edges = []
+        for idx in tqdm(generated_indices):
+            trace_edges.append(self.infer_edges[idx])
+
+        trace = InferenceTrace(trace_nids, trace_features, trace_edges)
+        # Cache on disk
+        save_info(trace_path, {'trace': trace})
+        return trace
 
     def __getitem__(self, idx):
         # get one example by index
@@ -206,10 +266,7 @@ class InferenceDataset(DGLDataset):
 
         # save other information in python dict
         info_path = os.path.join(self.save_path, '_info.pkl')
-        save_info(info_path, {'trace_nids': self._trace_nids,
-                              'trace_features': self._trace_features,
-                              'trace_edges': self._trace_edges,
-                              'num_infer_targets': self._num_infer_targets,
+        save_info(info_path, {'num_infer_targets': self._num_infer_targets,
                               'num_classes': self._num_classes})
 
     def load(self):
@@ -220,14 +277,8 @@ class InferenceDataset(DGLDataset):
 
         info_path = os.path.join(self.save_path, '_info.pkl')
         trace_info = load_info(info_path)
-        self._trace_nids = trace_info['trace_nids']
-        self._trace_features = trace_info['trace_features']
-        self._trace_edges = trace_info['trace_edges']
         self._num_infer_targets = trace_info['num_infer_targets']
         self._num_classes = trace_info['num_classes']
-
-        assert (len(self._trace_nids) == len(self._trace_features))
-        assert (len(self._trace_nids) == len(self._trace_edges))
 
     def has_cache(self):
         # check whether there are processed data in `self.save_path`
@@ -239,31 +290,13 @@ class InferenceDataset(DGLDataset):
         return (
             f'Dataset("{self.name}", num_graphs={len(self)},'
             + f" save_path={self.save_path},"
-            + f" trace_len={len(self._trace_nids)},"
             + f" num_infer_targets={self._num_infer_targets})"
         )
 
     @property
-    def trace_nids(self) -> th.Tensor:
-        """ Tensor of node IDs representing to inference targets in the trace"""
-        return self._trace_nids
-
-    @property
-    def trace_features(self) -> th.Tensor:
-        """ Tensor of features for each index in the trace"""
-        return self._trace_features
-
-    @property
-    def trace_edges(self) -> List[Dict[str, th.Tensor]]:
-        """ Returns a list of dicts, each dict containing the in and out edges for a node in the trace.
-            Keys are 'in' and 'out', values are tensors of node IDs.
-        """
-        return self._trace_edges
-
-    @property
-    def trace_len(self):
-        return self.TRACE_LEN
-
-    @property
     def num_classes(self):
         return self._num_classes
+
+    @property
+    def num_infer_targets(self):
+        return self._num_infer_targets
