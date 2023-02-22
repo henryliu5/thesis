@@ -50,5 +50,9 @@ def test_inference_dataset_partition():
     assert(all(x not in s for x in in_nids))
     assert(all(x not in s for x in out_nids))
 
+def test_inference_dataset_subgraph():
+    infer_data = InferenceDataset('reddit', 0.1, verbose=True)
+    infer_data.create_inference_trace(trace_len=256000, subgraph_bias=0.8)
+
 if __name__ == '__main__':
-    test_inference_dataset_reload()
+    test_inference_dataset_subgraph()

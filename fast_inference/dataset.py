@@ -8,10 +8,13 @@ from dgl.data.utils import makedirs, save_info, load_info
 import torch as th
 import numpy as np
 from tqdm import tqdm
-from typing import List, Dict
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 import random
-
+import math
+import time
+import gc
+import blosc2
 
 @dataclass(frozen=True)
 class InferenceTrace:
@@ -31,6 +34,36 @@ class InferenceTrace:
 
     def __len__(self):
         return self.nids.shape[0]
+    
+    @staticmethod
+    def load(path):
+        gc.disable()
+        
+        nids = blosc2.load_tensor(path + '-nids.pt')
+        features = blosc2.load_tensor(path + '-features.pt')
+        # nids = th.load(path + '-nids.pt')
+        # features = th.load(path + '-features.pt')
+        in_edges = th.load(path + '-in_edges.pt')
+        out_edges = th.load(path + '-out_edges.pt')
+        edges = [{'in': in_edges[i], 'out': out_edges[i]} for i in range(len(nids))]
+
+        gc.enable()
+
+        return InferenceTrace(nids, features, edges)
+
+    def save(self, path):
+        gc.disable()
+
+        in_edges = [edge['in'] for edge in self.edges]
+        out_edges = [edge['out'] for edge in self.edges]
+        blosc2.save_tensor(self.nids, path + '-nids.pt', mode="w")
+        blosc2.save_tensor(self.features, path + '-features.pt', mode="w")
+        # th.save(self.nids, path + '-nids.pt')
+        # th.save(self.features, path + '-features.pt')
+        th.save(in_edges, path + '-in_edges.pt')
+        th.save(out_edges, path + '-out_edges.pt')
+
+        gc.enable()
 
 
 class InferenceDataset(DGLDataset):
@@ -60,23 +93,37 @@ class InferenceDataset(DGLDataset):
     """
 
     def __init__(self,
-                 name,
-                 target_percent,
+                 name: str,
+                 target_percent: str,
+                 partitions: int=5,
                  rand_seed=143253,
                  raw_dir=None,
                  save_dir=None,
                  force_reload=False,
                  verbose=False,
                  **kwargs):
+        """Create a new InferenceDataset
+
+        Args:
+            name (str): Name of graph to use as source for generating inference targets.
+            target_percent (str): Percent of nodes to convert into inference targets.
+            partitions (int, optional): Number of METIS partitions to create. Used for cycling through "hotspots" in inference traces. Defaults to 5.
+            rand_seed (int, optional): _description_. Defaults to 143253.
+            raw_dir (_type_, optional): _description_. Defaults to None.
+            save_dir (_type_, optional): _description_. Defaults to None.
+            force_reload (bool, optional): _description_. Defaults to False.
+            verbose (bool, optional): _description_. Defaults to False.
+        """
         self._orig_name = name
         self._internal_kwargs = kwargs
         self._target_percent = target_percent
         self._rand_seed = rand_seed
         self._verbose = verbose
+        self._num_partitions = partitions
         th.manual_seed(rand_seed)
         random.seed(rand_seed)
         np.random.seed(rand_seed)
-        super(InferenceDataset, self).__init__(name=f'inference_{name}_{target_percent}',
+        super(InferenceDataset, self).__init__(name=f'inference_{name}_{target_percent}_parts_{partitions}',
                                                url=None,
                                                raw_dir=raw_dir,
                                                save_dir=save_dir,
@@ -113,6 +160,7 @@ class InferenceDataset(DGLDataset):
             if self._orig_name == 'ogbn-arxiv':
                 # Add reverse edges since ogbn-arxiv is unidirectional.
                 self._orig_graph = dgl.add_reverse_edges(self._orig_graph)
+            self._orig_nid_partitions = dgl.metis_partition_assignment(self._orig_graph, self._num_partitions)
             self._num_classes = self._dataset.num_classes
             return
 
@@ -127,6 +175,7 @@ class InferenceDataset(DGLDataset):
                                                  **self._internal_kwargs)
 
         self._orig_graph = self._dataset[0]
+        self._orig_nid_partitions = dgl.metis_partition_assignment(self._orig_graph, self._num_partitions)
         self._num_classes = self._dataset.num_classes
 
     def process(self):
@@ -213,7 +262,7 @@ class InferenceDataset(DGLDataset):
                                    'infer_features': self.infer_features,
                                    'infer_edges': self.infer_edges})
 
-    def create_inference_trace(self, trace_len: int = 256_000) -> InferenceTrace:
+    def create_inference_trace(self, trace_len: int = 256_000, subgraph_bias: Optional[float] = None) -> InferenceTrace:
         """Create a trace of inference requests
 
         Since self._orig_graph has had edges connecting inference targets removed,
@@ -221,20 +270,60 @@ class InferenceDataset(DGLDataset):
 
         Args:
             trace_len (int): Maximum length of trace to be generated
+            subgraph_bias (float): If not None, the fractions of requests that will come from a subgraph at a given time.
+                                   The subgraph that inference requests come from depends on the number of METIS partitions.
+                                   The trace will cycle through each of the subgraphs specified in the partitioning. 
         """
         # Load entire trace from disk if available
         # Will be stored under path for dataset, file name denotes length
-        trace_path = os.path.join(self.save_path, f'trace_{trace_len}.pkl')
-        if os.path.exists(trace_path):
+        trace_path = os.path.join(self.save_path, f'trace_{trace_len}_{subgraph_bias}')
+        if os.path.exists(trace_path + '-nids.pt'):
             print('Loading trace from', trace_path)
-            return load_info(trace_path)['trace']
+            start = time.time()
+            trace = InferenceTrace.load(trace_path)
+            print('Trace loaded in', time.time() - start)
+            return trace
 
         self._get_inference_target_info()
         assert (self.infer_nids.shape[0] == self.num_infer_targets)
 
         trace_len = min(trace_len, self.num_infer_targets)
         print(f'Generating inference trace of length {trace_len}...')
-        generated_indices = th.randperm(self.num_infer_targets)[:trace_len]
+
+        if subgraph_bias is None:
+            generated_indices = th.randperm(self.num_infer_targets)[:trace_len]
+        else:
+            assert (subgraph_bias >= 0 and subgraph_bias <= 1)
+            # TODO actually parallelize with torch/numpy ops
+            generated_indices = []
+            # Whether a nid has been used yet in the trace
+            used_mask = th.zeros(self.num_infer_targets, dtype=th.bool)
+            # Whether to sample from the subgraph (True) or the remainder of the graph (False)
+            subgraph_mask = np.random.choice([True, False], (trace_len, ), p=[subgraph_bias, 1 - subgraph_bias])
+
+            for partition in tqdm(range(self._num_partitions)):
+                available = th.arange(self.num_infer_targets)[th.logical_not(used_mask)]
+                # Two pointer approach, update which nodes are still availble each time we go to a new partition
+                global_choice = available[self._orig_nid_partitions[self.infer_nids[available]] != partition]
+                subgraph_choice = available[self._orig_nid_partitions[self.infer_nids[available]] == partition]
+
+                global_index = 0
+                subgraph_index = 0
+
+                requests_per_partition = int(math.ceil(trace_len / self._num_partitions))
+                for i in tqdm(range(requests_per_partition), leave=False):
+                    cur_index = requests_per_partition * partition + i
+                    if cur_index >= trace_len:
+                        break
+                    if (subgraph_mask[cur_index] and subgraph_index < len(subgraph_choice)) or global_index >= len(global_choice):
+                        choice = subgraph_choice[subgraph_index]
+                        subgraph_index += 1
+                    else:
+                        choice = global_choice[global_index]
+                        global_index += 1
+                    
+                    generated_indices.append(choice)
+                    used_mask[choice] = True
 
         trace_nids = self.infer_nids[generated_indices]
         trace_features = self.infer_features[generated_indices]
@@ -245,8 +334,9 @@ class InferenceDataset(DGLDataset):
             trace_edges.append(self.infer_edges[idx])
 
         trace = InferenceTrace(trace_nids, trace_features, trace_edges)
+        assert (len(trace) == trace_len)
         # Cache on disk
-        save_info(trace_path, {'trace': trace})
+        trace.save(trace_path)
         return trace
 
     def __getitem__(self, idx):
@@ -267,7 +357,8 @@ class InferenceDataset(DGLDataset):
         # save other information in python dict
         info_path = os.path.join(self.save_path, '_info.pkl')
         save_info(info_path, {'num_infer_targets': self._num_infer_targets,
-                              'num_classes': self._num_classes})
+                              'num_classes': self._num_classes,
+                              'orig_nid_partitions': self._orig_nid_partitions})
 
     def load(self):
         # load processed data from directory `self.save_path`
@@ -279,6 +370,7 @@ class InferenceDataset(DGLDataset):
         trace_info = load_info(info_path)
         self._num_infer_targets = trace_info['num_infer_targets']
         self._num_classes = trace_info['num_classes']
+        self._orig_nid_partitions = trace_info['orig_nid_partitions']
 
     def has_cache(self):
         # check whether there are processed data in `self.save_path`
