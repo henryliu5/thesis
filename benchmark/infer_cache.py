@@ -43,16 +43,17 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
 
     print(g)
 
-    n = infer_data.trace_len // 2
+    n = infer_data.trace_len
     if infer_data._orig_name == 'reddit':
         n = infer_data.trace_len // 10
 
-    for i in tqdm(range(0, n, BATCH_SIZE)):
+    MAX_ITERS = 2000
+    for i in tqdm(range(0, min(n, MAX_ITERS * BATCH_SIZE), BATCH_SIZE)):
         if i + BATCH_SIZE >= n:
             continue
 
         # TODO decide what to do if multiple infer requests for same node id
-        # new_nid = infer_data.trace_nids[i:i+BATCH_SIZE]
+        orig_new_nid = infer_data.trace_nids[i:i+BATCH_SIZE]
         new_nid = []
         adj_nids = []
         sizes = []
@@ -65,6 +66,7 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
                 s.add(infer_data.trace_nids[idx].item())
         
         new_nid = torch.tensor(new_nid)
+        assert(new_nid.shape == orig_new_nid.shape)
         # assert(new_nid.shape == new_nid.unique().shape) 
         if BATCH_SIZE == 1:
             new_nid = new_nid.reshape(1)
@@ -124,9 +126,9 @@ if __name__ == '__main__':
     names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
 
-    use_gpu_sampling = True
+    use_gpu_sampling = False
     if use_gpu_sampling:
-        path = 'benchmark/data/new_cache_keyed_gpu'
+        path = 'benchmark/data/new_cache_gpu'
         names = ['reddit', 'cora', 'ogbn-products']
     else:
         path = 'benchmark/data/new_cache'
@@ -134,7 +136,8 @@ if __name__ == '__main__':
     for model in models:
         for name in names:
             for batch_size in batch_sizes:
-                main(name=name, model_name=model, batch_size=batch_size, dir=path, use_gpu_sampling=use_gpu_sampling)
+                # !! note dir is None below
+                main(name=name, model_name=model, batch_size=batch_size, dir=None, use_gpu_sampling=use_gpu_sampling)
                 gc.collect()
                 gc.collect()
                 gc.collect()
