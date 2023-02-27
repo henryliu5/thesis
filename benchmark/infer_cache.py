@@ -23,6 +23,7 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     # Set up feature server
     feat_server = FeatureServer(g, 'cuda', ['feat'])
     out_deg = g.out_degrees()
+    
     # Let's use top 20% of node features for static cache
     _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.2), sorted=False)
     del out_deg
@@ -42,31 +43,31 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     model.eval()
 
     print(g)
-
-    n = infer_data.trace_len
+    trace = infer_data.create_inference_trace(subgraph_bias=0.8)
+    n = len(trace)
     if infer_data._orig_name == 'reddit':
-        n = infer_data.trace_len // 10
+        n = len(trace) // 10
 
-    MAX_ITERS = 2000
+    MAX_ITERS = 1000
     for i in tqdm(range(0, min(n, MAX_ITERS * BATCH_SIZE), BATCH_SIZE)):
         if i + BATCH_SIZE >= n:
             continue
 
         # TODO decide what to do if multiple infer requests for same node id
-        orig_new_nid = infer_data.trace_nids[i:i+BATCH_SIZE]
+        # orig_new_nid = trace.nids[i:i+BATCH_SIZE]
         new_nid = []
         adj_nids = []
         sizes = []
         s = set()
         for idx in range(i, i + BATCH_SIZE):
-            if infer_data.trace_nids[idx].item() not in s:
-                adj_nids.append(infer_data.trace_edges[idx]["in"])
-                sizes.append(infer_data.trace_edges[idx]["in"].shape[0])
-                new_nid.append(infer_data.trace_nids[idx].item())
-                s.add(infer_data.trace_nids[idx].item())
+            if trace.nids[idx].item() not in s:
+                adj_nids.append(trace.edges[idx]["in"])
+                sizes.append(trace.edges[idx]["in"].shape[0])
+                new_nid.append(trace.nids[idx].item())
+                s.add(trace.nids[idx].item())
         
         new_nid = torch.tensor(new_nid)
-        assert(new_nid.shape == orig_new_nid.shape)
+        # assert(new_nid.shape == orig_new_nid.shape)
         # assert(new_nid.shape == new_nid.unique().shape) 
         if BATCH_SIZE == 1:
             new_nid = new_nid.reshape(1)
@@ -84,8 +85,8 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
                 required_nodes = torch.cat(adj_nids)
                 required_nodes_unique = required_nodes.unique()
                 interleave_count = torch.tensor(sizes)
-                # required_nodes = torch.cat([infer_data.trace_edges[idx]["in"] for idx in range(i, i+BATCH_SIZE)])
-                # interleave_count = torch.tensor([infer_data.trace_edges[idx]["in"].shape[0] for idx in range(i, i+BATCH_SIZE)])
+                # required_nodes = torch.cat([trace.edges[idx]["in"] for idx in range(i, i+BATCH_SIZE)])
+                # interleave_count = torch.tensor([trace.edges[idx]["in"].shape[0] for idx in range(i, i+BATCH_SIZE)])
 
                 # Create first layer message flow graph by looking at required neighbors
                 all_seeds = torch.cat((required_nodes_unique, new_nid))
@@ -126,9 +127,9 @@ if __name__ == '__main__':
     names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
 
-    use_gpu_sampling = False
+    use_gpu_sampling = True
     if use_gpu_sampling:
-        path = 'benchmark/data/new_cache_gpu'
+        path = 'benchmark/data/new_cache_gpu_bias_0.8'
         names = ['reddit', 'cora', 'ogbn-products']
     else:
         path = 'benchmark/data/new_cache'
@@ -136,8 +137,7 @@ if __name__ == '__main__':
     for model in models:
         for name in names:
             for batch_size in batch_sizes:
-                # !! note dir is None below
-                main(name=name, model_name=model, batch_size=batch_size, dir=None, use_gpu_sampling=use_gpu_sampling)
+                main(name=name, model_name=model, batch_size=batch_size, dir=path, use_gpu_sampling=use_gpu_sampling)
                 gc.collect()
                 gc.collect()
                 gc.collect()
