@@ -74,7 +74,12 @@ def print_timer_info(ignore_first_n = 2):
         print('\t\tAvg:', round(sum(v) / len(v), 6))
 
 def export_timer_info(path, current_config: Dict[str, Any], ignore_first_n = 2):
-    ''' Write data to CSV '''
+    ''' Write data to CSV 
+    
+        WARNING: Performs CUDA syncrhonization for accurate events
+    '''
+    sync_timers()
+    
     df = pd.DataFrame.from_dict(TRACES)
 
     # Drop first n: https://sparkbyexamples.com/pandas/pandas-drop-first-n-rows-from-dataframe/
