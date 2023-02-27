@@ -1,7 +1,7 @@
 from fast_inference.dataset import InferenceDataset
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
-from fast_inference.feat_server import FeatureServer
+from fast_inference.feat_server import FeatureServer, CountingFeatServer
 import dgl
 import torch
 from tqdm import tqdm
@@ -22,6 +22,8 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
 
     # Set up feature server
     feat_server = FeatureServer(g, 'cuda', ['feat'], use_pinned_mem=False)
+    # feat_server = CountingFeatServer(g, 'cuda', ['feat'], use_pinned_mem=False)
+    # feat_server.init_counts(g.num_nodes())
     # # #!! Use only from partition 1
     # part_mapping = infer_data._orig_nid_partitions
     # indices = torch.arange(g.num_nodes())[part_mapping == 2]
@@ -31,6 +33,9 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.2), sorted=False)
     del out_deg
     feat_server.set_static_cache(indices, ['feat'])
+    k = 2000
+    processed = 0
+
     print('Caching', indices.shape[0], 'nodes')
     del indices
     gc.collect()
@@ -111,7 +116,11 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
 
             with Timer(name="dataloading", track_cuda=True):
                 required_feats = mfgs[0].ndata['_ID']['_N']
-                # required_feats = torch.randint(0, 111059956, (124364,))
+                with Timer(name="update cache", track_cuda=True):
+                    if (i // k) > processed + 1:
+                        feat_server.update_cache(['feat'])
+                        processed = i // k  
+
                 inputs, mfgs = feat_server.get_features(required_feats, feats=['feat'], mfgs=mfgs)
                 inputs = inputs['feat']
 
@@ -132,8 +141,10 @@ if __name__ == '__main__':
 
     use_gpu_sampling = True
     if use_gpu_sampling:
-        path = 'benchmark/data/new_cache_gpu_bias_0.8_only_2'
-        names = ['reddit', 'cora', 'ogbn-products']
+        path = 'benchmark/data/new_cache_gpu_bias_0.8'
+        # names = ['reddit', 'cora', 'ogbn-products']
+        batch_sizes = [1, 64, 128, 256]
+        names = ['ogbn-products']
     else:
         path = 'benchmark/data/new_cache'
 

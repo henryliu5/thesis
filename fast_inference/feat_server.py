@@ -111,6 +111,8 @@ class FeatureServer:
             feats (List[str]): List of strings corresponding to feature keys that should be cached.
         """
         self.cache_size = node_ids.shape[0]
+        # Reset all
+        self.nid_is_on_gpu[:] = False
         self.nid_is_on_gpu[node_ids] = True
         self.cache_mapping[node_ids] = torch.arange(
             self.cache_size, device=self.device)
@@ -122,3 +124,50 @@ class FeatureServer:
         assert (self.profile), "Profiling must be turned on for this FeatureServer."
         assert (self.requests != 0), "No requests received by FeatureServer yet."
         return (self.cache_hits / self.requests).item()
+
+    def update_cache(self, *args):
+        pass
+
+class CountingFeatServer(FeatureServer):
+
+    def init_counts(self, num_total_nodes):
+        self.num_total_nodes = num_total_nodes
+        self.counts = torch.zeros(num_total_nodes)
+
+    def update_cache(self, feats):
+        # Resets cache mask (nothing stored anymore)
+        _, most_common_nids = torch.topk(self.counts, self.cache_size, sorted=False)
+        # # Updates to most common in based on self.counts
+        # self.set_static_cache(most_common_nids, ['feat'])
+
+        most_common_mask = torch.zeros(self.g.num_nodes(), dtype=torch.bool)
+        most_common_mask[most_common_nids] = True
+        # Mask for node ids that need features to be transferred
+        # (new entrants to cache)
+        requires_update_mask = torch.logical_and(most_common_mask, torch.logical_not(self.nid_is_on_gpu))
+        # print(torch.count_nonzero(requires_update_mask.int()))
+        # Indices of the above in cache
+        requires_update_cache_idx = self.cache_mapping[requires_update_mask]
+
+        for feat in feats:
+            self.cache[feat][requires_update_cache_idx] = self.g.ndata[feat][requires_update_mask].to(self.device)
+
+        self.nid_is_on_gpu[most_common_mask] = True
+        self.nid_is_on_gpu[~most_common_mask] = False
+        self.cache_mapping[~most_common_mask] = -1
+        # self.counts *= 0
+        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+
+    def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
+        """Get features for a list of nodes.
+
+        Features are fetched from GPU memory if cached, otherwise from CPU memory.
+
+        Args:
+            node_ids (torch.Tensor): A 1-D tensor of node IDs.
+            feats (List[str]): List of strings corresponding to feature keys that should be fetched.
+        """
+        node_ids = node_ids.cpu()
+        with Timer('update counts'):
+            self.counts[node_ids] += 1
+        return super().get_features(node_ids, feats, mfgs)
