@@ -21,10 +21,13 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     out_size = infer_data.num_classes
 
     # Set up feature server
-    feat_server = FeatureServer(g, 'cuda', ['feat'])
-    out_deg = g.out_degrees()
-    
+    feat_server = FeatureServer(g, 'cuda', ['feat'], use_pinned_mem=False)
+    # # #!! Use only from partition 1
+    # part_mapping = infer_data._orig_nid_partitions
+    # indices = torch.arange(g.num_nodes())[part_mapping == 2]
+
     # Let's use top 20% of node features for static cache
+    out_deg = g.out_degrees()
     _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.2), sorted=False)
     del out_deg
     feat_server.set_static_cache(indices, ['feat'])
@@ -129,7 +132,7 @@ if __name__ == '__main__':
 
     use_gpu_sampling = True
     if use_gpu_sampling:
-        path = 'benchmark/data/new_cache_gpu_bias_0.8'
+        path = 'benchmark/data/new_cache_gpu_bias_0.8_only_2'
         names = ['reddit', 'cora', 'ogbn-products']
     else:
         path = 'benchmark/data/new_cache'

@@ -4,7 +4,12 @@ from typing import List, Optional
 from fast_inference.timer import Timer
 
 class FeatureServer:
-    def __init__(self, g: dgl.DGLGraph, device: torch.device or str, track_features: List[str], profile_hit_rate: bool = False, pinned_buf_size: int = 150_000):
+    def __init__(self, g: dgl.DGLGraph, 
+                 device: torch.device or str,
+                 track_features: List[str],
+                 use_pinned_mem: bool = True,
+                 profile_hit_rate: bool = False,
+                 pinned_buf_size: int = 150_000):
         """ Initializes a new FeatureServer
 
         Args:
@@ -18,6 +23,7 @@ class FeatureServer:
         self.cache_mapping = - \
             torch.ones(g.num_nodes(), device=self.device).long()
         self.cache = {}
+        self.use_pinned_mem = use_pinned_mem
         self.profile = profile_hit_rate
         self.requests = 0
         self.cache_hits = 0
@@ -64,14 +70,20 @@ class FeatureServer:
                 # Start copy to GPU mem
                 with Timer('mask cpu feats'):
                     m = node_ids[cpu_mask]
+                    # TODO add parameter to control "use_pinned_mem"
                     # Perform resizing if necessary
-                    if m.shape[0] > self.pinned_buf_dict[feat].shape[0]:
-                        self.pinned_buf_dict[feat] = self.pinned_buf_dict[feat].resize_((m.shape[0], self.pinned_buf_dict[feat].shape[1]))
-                    required_cpu_features = self.pinned_buf_dict[feat].narrow(0, 0, m.shape[0])
+                    if self.use_pinned_mem:
+                        if m.shape[0] > self.pinned_buf_dict[feat].shape[0]:
+                            self.pinned_buf_dict[feat] = self.pinned_buf_dict[feat].resize_((m.shape[0], self.pinned_buf_dict[feat].shape[1]))
+                        required_cpu_features = self.pinned_buf_dict[feat].narrow(0, 0, m.shape[0])
+
                 with Timer('feature gather'):
-                    torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
-                    # NOTE Can remove above for "slow mode"
-                    # required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
+                    if self.use_pinned_mem:
+                        # Places indices directly into pinned memory buffer
+                        torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
+                    else:
+                        #"slow mode"
+                        required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
 
                 with Timer('CPU-GPU copy', track_cuda=True):
                     # Copy CPU features
