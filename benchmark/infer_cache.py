@@ -1,7 +1,7 @@
 from fast_inference.dataset import InferenceDataset
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
-from fast_inference.feat_server import FeatureServer, CountingFeatServer
+from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer
 import dgl
 import torch
 from tqdm import tqdm
@@ -21,9 +21,10 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     out_size = infer_data.num_classes
 
     # Set up feature server
-    feat_server = FeatureServer(g, 'cuda', ['feat'], use_pinned_mem=False)
-    # feat_server = CountingFeatServer(g, 'cuda', ['feat'], use_pinned_mem=False)
-    # feat_server.init_counts(g.num_nodes())
+    # feat_server = FeatureServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    feat_server = CountingFeatServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    # feat_server = LFUServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    feat_server.init_counts(g.num_nodes())
     # # #!! Use only from partition 1
     # part_mapping = infer_data._orig_nid_partitions
     # indices = torch.arange(g.num_nodes())[part_mapping == 2]
@@ -132,6 +133,7 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     print_timer_info()
     if dir != None:
         export_timer_info(f'{dir}/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
+        feat_server.export_profile(f'{dir}/{model_name.upper()}_cache_info', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
     # main('cora', 'gcn', 256, True)#, dir='benchmark/data/new_index_select')
@@ -141,7 +143,7 @@ if __name__ == '__main__':
 
     use_gpu_sampling = True
     if use_gpu_sampling:
-        path = 'benchmark/data/new_cache_gpu_bias_0.8'
+        path = 'benchmark/data/new_cache_gpu_bias_0.8_count'
         # names = ['reddit', 'cora', 'ogbn-products']
         batch_sizes = [1, 64, 128, 256]
         names = ['ogbn-products']
