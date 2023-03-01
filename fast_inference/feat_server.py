@@ -219,6 +219,7 @@ class LFUServer(FeatureServer):
             for feat in feats:
                 cache_size = self.cache[feat].shape[0]
                 if nids_to_add.shape[0] > cache_size:
+                    # Truncate if necessary, just take whatever first firts
                     nids_to_add = nids_to_add[:cache_size]
 
                 count_of_cache_residents = self.counts[self.nid_is_on_gpu]
@@ -235,7 +236,9 @@ class LFUServer(FeatureServer):
                 self.cache_mapping[nids_to_add] = cache_slots
 
                 old_shape = self.cache[feat].shape
-                self.cache[feat][cache_slots] = res_dict[feat][cpu_mask]
+                
+                # Recall the above truncation - the features we want will be at the front of the result tensor
+                self.cache[feat][cache_slots] = res_dict[feat][cpu_mask][:cache_size]
                 assert(self.cache[feat].shape == old_shape)
 
         return res_dict, res_mfg
