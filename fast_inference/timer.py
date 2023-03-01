@@ -74,8 +74,15 @@ def print_timer_info(ignore_first_n = 2):
         print('\t\tAvg:', round(sum(v) / len(v), 6))
 
 def export_timer_info(path, current_config: Dict[str, Any], ignore_first_n = 2):
-    ''' Write data to CSV '''
-    df = pd.DataFrame.from_dict(TRACES)
+    ''' Write data to CSV 
+    
+        WARNING: Performs CUDA syncrhonization for accurate events
+    '''
+    sync_timers()
+    export_dict_as_pd(TRACES, path, current_config, ignore_first_n)
+
+def export_dict_as_pd(export_dict, path, current_config: Dict[str, Any], ignore_first_n = 2):
+    df = pd.DataFrame.from_dict(export_dict)
 
     # Drop first n: https://sparkbyexamples.com/pandas/pandas-drop-first-n-rows-from-dataframe/
     df = df.tail(-ignore_first_n)
@@ -94,4 +101,3 @@ def export_timer_info(path, current_config: Dict[str, Any], ignore_first_n = 2):
     
     Path(path).mkdir(parents=True, exist_ok=True)
     df.to_csv(os.path.join(path, file_name))
-

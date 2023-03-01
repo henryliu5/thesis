@@ -1,7 +1,7 @@
 from fast_inference.dataset import InferenceDataset
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
-from fast_inference.feat_server import FeatureServer
+from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer
 import dgl
 import torch
 from tqdm import tqdm
@@ -21,12 +21,22 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     out_size = infer_data.num_classes
 
     # Set up feature server
-    feat_server = FeatureServer(g, 'cuda', ['feat'])
-    out_deg = g.out_degrees()
+    # feat_server = FeatureServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    feat_server = CountingFeatServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    # feat_server = LFUServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    feat_server.init_counts(g.num_nodes())
+    # # #!! Use only from partition 1
+    # part_mapping = infer_data._orig_nid_partitions
+    # indices = torch.arange(g.num_nodes())[part_mapping == 2]
+
     # Let's use top 20% of node features for static cache
+    out_deg = g.out_degrees()
     _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.2), sorted=False)
     del out_deg
     feat_server.set_static_cache(indices, ['feat'])
+    k = 2000
+    processed = 0
+
     print('Caching', indices.shape[0], 'nodes')
     del indices
     gc.collect()
@@ -42,29 +52,31 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     model.eval()
 
     print(g)
-
-    n = infer_data.trace_len // 2
+    trace = infer_data.create_inference_trace(subgraph_bias=0.8)
+    n = len(trace)
     if infer_data._orig_name == 'reddit':
-        n = infer_data.trace_len // 10
+        n = len(trace) // 10
 
-    for i in tqdm(range(0, n, BATCH_SIZE)):
+    MAX_ITERS = 1000
+    for i in tqdm(range(0, min(n, MAX_ITERS * BATCH_SIZE), BATCH_SIZE)):
         if i + BATCH_SIZE >= n:
             continue
 
         # TODO decide what to do if multiple infer requests for same node id
-        # new_nid = infer_data.trace_nids[i:i+BATCH_SIZE]
+        # orig_new_nid = trace.nids[i:i+BATCH_SIZE]
         new_nid = []
         adj_nids = []
         sizes = []
         s = set()
         for idx in range(i, i + BATCH_SIZE):
-            if infer_data.trace_nids[idx].item() not in s:
-                adj_nids.append(infer_data.trace_edges[idx]["in"])
-                sizes.append(infer_data.trace_edges[idx]["in"].shape[0])
-                new_nid.append(infer_data.trace_nids[idx].item())
-                s.add(infer_data.trace_nids[idx].item())
+            if trace.nids[idx].item() not in s:
+                adj_nids.append(trace.edges[idx]["in"])
+                sizes.append(trace.edges[idx]["in"].shape[0])
+                new_nid.append(trace.nids[idx].item())
+                s.add(trace.nids[idx].item())
         
         new_nid = torch.tensor(new_nid)
+        # assert(new_nid.shape == orig_new_nid.shape)
         # assert(new_nid.shape == new_nid.unique().shape) 
         if BATCH_SIZE == 1:
             new_nid = new_nid.reshape(1)
@@ -82,8 +94,8 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
                 required_nodes = torch.cat(adj_nids)
                 required_nodes_unique = required_nodes.unique()
                 interleave_count = torch.tensor(sizes)
-                # required_nodes = torch.cat([infer_data.trace_edges[idx]["in"] for idx in range(i, i+BATCH_SIZE)])
-                # interleave_count = torch.tensor([infer_data.trace_edges[idx]["in"].shape[0] for idx in range(i, i+BATCH_SIZE)])
+                # required_nodes = torch.cat([trace.edges[idx]["in"] for idx in range(i, i+BATCH_SIZE)])
+                # interleave_count = torch.tensor([trace.edges[idx]["in"].shape[0] for idx in range(i, i+BATCH_SIZE)])
 
                 # Create first layer message flow graph by looking at required neighbors
                 all_seeds = torch.cat((required_nodes_unique, new_nid))
@@ -105,7 +117,11 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
 
             with Timer(name="dataloading", track_cuda=True):
                 required_feats = mfgs[0].ndata['_ID']['_N']
-                # required_feats = torch.randint(0, 111059956, (124364,))
+                with Timer(name="update cache", track_cuda=True):
+                    if (i // k) > processed + 1:
+                        feat_server.update_cache(['feat'])
+                        processed = i // k  
+
                 inputs, mfgs = feat_server.get_features(required_feats, feats=['feat'], mfgs=mfgs)
                 inputs = inputs['feat']
 
@@ -117,6 +133,7 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     print_timer_info()
     if dir != None:
         export_timer_info(f'{dir}/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
+        feat_server.export_profile(f'{dir}/{model_name.upper()}_cache_info', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
     # main('cora', 'gcn', 256, True)#, dir='benchmark/data/new_index_select')
@@ -126,8 +143,10 @@ if __name__ == '__main__':
 
     use_gpu_sampling = True
     if use_gpu_sampling:
-        path = 'benchmark/data/new_cache_keyed_gpu'
-        names = ['reddit', 'cora', 'ogbn-products']
+        path = 'benchmark/data/new_cache_gpu_bias_0.8_count'
+        # names = ['reddit', 'cora', 'ogbn-products']
+        batch_sizes = [1, 64, 128, 256]
+        names = ['ogbn-products']
     else:
         path = 'benchmark/data/new_cache'
 

@@ -1,10 +1,15 @@
 import torch
 import dgl
 from typing import List, Optional
-from fast_inference.timer import Timer
+from fast_inference.timer import Timer, export_dict_as_pd
 
 class FeatureServer:
-    def __init__(self, g: dgl.DGLGraph, device: torch.device or str, track_features: List[str], profile_hit_rate: bool = False, pinned_buf_size: int = 150_000):
+    def __init__(self, g: dgl.DGLGraph, 
+                 device: torch.device or str,
+                 track_features: List[str],
+                 use_pinned_mem: bool = True,
+                 profile_hit_rate: bool = False,
+                 pinned_buf_size: int = 150_000):
         """ Initializes a new FeatureServer
 
         Args:
@@ -18,9 +23,9 @@ class FeatureServer:
         self.cache_mapping = - \
             torch.ones(g.num_nodes(), device=self.device).long()
         self.cache = {}
+        self.use_pinned_mem = use_pinned_mem
         self.profile = profile_hit_rate
-        self.requests = 0
-        self.cache_hits = 0
+        self.profile_info = {'request_size': [], 'cache_hits': [], 'hit_rate': []}
 
         # Pinned memory buffers for placing gathered CPU features prior to CPU->GPU copy
         self.pinned_buf_dict = {}
@@ -51,8 +56,10 @@ class FeatureServer:
                 cpu_mask = ~gpu_mask
 
             if self.profile:
-                self.requests += node_ids.shape[0]
-                self.cache_hits += gpu_mask.long().sum()
+                self.profile_info['request_size'].append(node_ids.shape[0])
+                cache_hits = gpu_mask.int().sum().item()
+                self.profile_info['cache_hits'].append(cache_hits)
+                self.profile_info['hit_rate'].append(cache_hits / node_ids.shape[0])
 
             for feat in feats:
                 feat_shape = list(self.g.ndata[feat].shape[1:])
@@ -64,14 +71,20 @@ class FeatureServer:
                 # Start copy to GPU mem
                 with Timer('mask cpu feats'):
                     m = node_ids[cpu_mask]
+                    # TODO add parameter to control "use_pinned_mem"
                     # Perform resizing if necessary
-                    if m.shape[0] > self.pinned_buf_dict[feat].shape[0]:
-                        self.pinned_buf_dict[feat] = self.pinned_buf_dict[feat].resize_((m.shape[0], self.pinned_buf_dict[feat].shape[1]))
-                    required_cpu_features = self.pinned_buf_dict[feat].narrow(0, 0, m.shape[0])
+                    if self.use_pinned_mem:
+                        if m.shape[0] > self.pinned_buf_dict[feat].shape[0]:
+                            self.pinned_buf_dict[feat] = self.pinned_buf_dict[feat].resize_((m.shape[0], self.pinned_buf_dict[feat].shape[1]))
+                        required_cpu_features = self.pinned_buf_dict[feat].narrow(0, 0, m.shape[0])
+
                 with Timer('feature gather'):
-                    torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
-                    # NOTE Can remove above for "slow mode"
-                    # required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
+                    if self.use_pinned_mem:
+                        # Places indices directly into pinned memory buffer
+                        torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
+                    else:
+                        #"slow mode"
+                        required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
 
                 with Timer('CPU-GPU copy', track_cuda=True):
                     # Copy CPU features
@@ -84,7 +97,9 @@ class FeatureServer:
                     # Features from GPU mem
                     # self.cache_mapping maps the global node id to the respective index in the cache
                     if feat in self.cache: # hacky drop in for torch.any(gpu_mask)
-                        required_gpu_features = self.cache[feat][self.cache_mapping[node_ids[gpu_mask]]]
+                        mapping = self.cache_mapping[node_ids[gpu_mask]]
+                        assert(torch.all(mapping >= 0))
+                        required_gpu_features = self.cache[feat][mapping]
                         res_tensor[gpu_mask] = required_gpu_features
                 
                 res[feat] = res_tensor
@@ -99,6 +114,8 @@ class FeatureServer:
             feats (List[str]): List of strings corresponding to feature keys that should be cached.
         """
         self.cache_size = node_ids.shape[0]
+        # Reset all
+        self.nid_is_on_gpu[:] = False
         self.nid_is_on_gpu[node_ids] = True
         self.cache_mapping[node_ids] = torch.arange(
             self.cache_size, device=self.device)
@@ -106,7 +123,119 @@ class FeatureServer:
         for feat in feats:
             self.cache[feat] = self.g.ndata[feat][node_ids].to(self.device)
 
-    def get_cache_hit_ratio(self):
-        assert (self.profile), "Profiling must be turned on for this FeatureServer."
-        assert (self.requests != 0), "No requests received by FeatureServer yet."
-        return (self.cache_hits / self.requests).item()
+    def export_profile(self, path, current_config):
+        if self.profile:
+            export_dict_as_pd(self.profile_info, path, current_config)
+        else:
+            print('FeatureServer.export_profile called but profiling disabled!')
+
+    def init_counts(self, *args):
+        pass
+
+    def update_cache(self, *args):
+        pass
+
+class CountingFeatServer(FeatureServer):
+
+    def init_counts(self, num_total_nodes):
+        self.num_total_nodes = num_total_nodes
+        self.counts = torch.zeros(num_total_nodes)
+
+    def update_cache(self, feats):
+        # Resets cache mask (nothing stored anymore)
+        _, most_common_nids = torch.topk(self.counts, self.cache_size, sorted=False)
+        # # Updates to most common in based on self.counts
+        # self.set_static_cache(most_common_nids, ['feat'])
+
+        most_common_mask = torch.zeros(self.g.num_nodes(), dtype=torch.bool)
+        most_common_mask[most_common_nids] = True
+        # Mask for node ids that need features to be transferred
+        # (new entrants to cache)
+        requires_update_mask = torch.logical_and(most_common_mask, torch.logical_not(self.nid_is_on_gpu))
+
+        # Indices of who can be replaced in the cache
+        replace_nids_mask = torch.logical_and(~most_common_mask, self.nid_is_on_gpu)
+        requires_update_cache_idx = self.cache_mapping[replace_nids_mask]
+
+        for feat in feats:
+            old_shape = self.cache[feat].shape
+            self.cache[feat][requires_update_cache_idx] = self.g.ndata[feat][requires_update_mask].to(self.device)
+            assert(self.cache[feat].shape == old_shape)
+
+        self.nid_is_on_gpu[most_common_mask] = True
+        self.cache_mapping[requires_update_mask] = requires_update_cache_idx
+        self.nid_is_on_gpu[~most_common_mask] = False
+        self.cache_mapping[~most_common_mask] = -1
+        # self.counts *= 0
+        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+
+    def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
+        """Get features for a list of nodes.
+
+        Features are fetched from GPU memory if cached, otherwise from CPU memory.
+
+        Args:
+            node_ids (torch.Tensor): A 1-D tensor of node IDs.
+            feats (List[str]): List of strings corresponding to feature keys that should be fetched.
+        """
+        node_ids = node_ids.cpu()
+        with Timer('update counts'):
+            self.counts[node_ids] += 1
+        return super().get_features(node_ids, feats, mfgs)
+    
+class LFUServer(FeatureServer):
+
+    def init_counts(self, num_total_nodes):
+        self.num_total_nodes = num_total_nodes
+        self.counts = torch.zeros(num_total_nodes)
+
+    def update_cache(self, *args):
+        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+
+    def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
+        """Get features for a list of nodes.
+
+        Features are fetched from GPU memory if cached, otherwise from CPU memory.
+
+        Args:
+            node_ids (torch.Tensor): A 1-D tensor of node IDs.
+            feats (List[str]): List of strings corresponding to feature keys that should be fetched.
+        """
+        node_ids = node_ids.cpu()
+        with Timer('update counts'):
+            self.counts[node_ids] += 1
+
+        res_dict, res_mfg = super().get_features(node_ids, feats, mfgs)
+
+        with Timer('LFU update'):
+            # Perform LFU update
+            # Admission policy is simply allow everything in
+            gpu_mask = self.nid_is_on_gpu[node_ids]
+            cpu_mask = ~gpu_mask
+
+            # Will want to add cache misses
+            nids_to_add = node_ids[cpu_mask]
+
+            for feat in feats:
+                cache_size = self.cache[feat].shape[0]
+                if nids_to_add.shape[0] > cache_size:
+                    nids_to_add = nids_to_add[:cache_size]
+
+                count_of_cache_residents = self.counts[self.nid_is_on_gpu]
+                resident_mapping = torch.arange(self.nid_is_on_gpu.shape[0])[self.nid_is_on_gpu]
+                # Replace lowest count
+                _, replace_residents = torch.topk(count_of_cache_residents, k=nids_to_add.shape[0], largest=False, sorted=False)
+                replace_nids = resident_mapping[replace_residents]
+
+                cache_slots = self.cache_mapping[replace_nids]
+                self.nid_is_on_gpu[replace_nids] = False
+                self.cache_mapping[replace_nids] = -1
+
+                self.nid_is_on_gpu[nids_to_add] = True
+                self.cache_mapping[nids_to_add] = cache_slots
+
+                old_shape = self.cache[feat].shape
+                self.cache[feat][cache_slots] = res_dict[feat][cpu_mask]
+                assert(self.cache[feat].shape == old_shape)
+
+        return res_dict, res_mfg

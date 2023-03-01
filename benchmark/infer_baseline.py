@@ -38,27 +38,28 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     model.eval()
 
     print(g)
-
-    n = infer_data.trace_len // 2
+    trace = infer_data.create_inference_trace(subgraph_bias=0.8)
+    n = len(trace)
     if infer_data._orig_name == 'reddit':
-        n = infer_data.trace_len // 10
+        n = len(trace) // 10
 
-    for i in tqdm(range(0, n, BATCH_SIZE)):
+    MAX_ITERS = 1000
+    for i in tqdm(range(0, min(n, MAX_ITERS * BATCH_SIZE), BATCH_SIZE)):
         if i + BATCH_SIZE >= n:
             continue
 
         # TODO decide what to do if multiple infer requests for same node id
-        # new_nid = infer_data.trace_nids[i:i+BATCH_SIZE]
+        # new_nid = trace.nids[i:i+BATCH_SIZE]
         new_nid = []
         adj_nids = []
         sizes = []
         s = set()
         for idx in range(i, i + BATCH_SIZE):
-            if infer_data.trace_nids[idx].item() not in s:
-                adj_nids.append(infer_data.trace_edges[idx]["in"])
-                sizes.append(infer_data.trace_edges[idx]["in"].shape[0])
-                new_nid.append(infer_data.trace_nids[idx].item())
-                s.add(infer_data.trace_nids[idx].item())
+            if trace.nids[idx].item() not in s:
+                adj_nids.append(trace.edges[idx]["in"])
+                sizes.append(trace.edges[idx]["in"].shape[0])
+                new_nid.append(trace.nids[idx].item())
+                s.add(trace.nids[idx].item())
         
         new_nid = torch.tensor(new_nid)
         # if use_gpu_sampling:
@@ -81,8 +82,8 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
                 required_nodes = torch.cat(adj_nids)
                 required_nodes_unique = required_nodes.unique()
                 interleave_count = torch.tensor(sizes)
-                # required_nodes = torch.cat([infer_data.trace_edges[idx]["in"] for idx in range(i, i+BATCH_SIZE)])
-                # interleave_count = torch.tensor([infer_data.trace_edges[idx]["in"].shape[0] for idx in range(i, i+BATCH_SIZE)])
+                # required_nodes = torch.cat([trace.edges[idx]["in"] for idx in range(i, i+BATCH_SIZE)])
+                # interleave_count = torch.tensor([trace.edges[idx]["in"].shape[0] for idx in range(i, i+BATCH_SIZE)])
 
                 # Create first layer message flow graph by looking at required neighbors
                 all_seeds = torch.cat((required_nodes_unique, new_nid))
@@ -134,7 +135,7 @@ if __name__ == '__main__':
 
     use_gpu_sampling = True
     if use_gpu_sampling:
-        path = 'benchmark/data/new_baseline_gpu'
+        path = 'benchmark/data/new_baseline_gpu_bias_0.8'
         models = ['gcn']
         names = ['reddit', 'cora', 'ogbn-products']
     else:
