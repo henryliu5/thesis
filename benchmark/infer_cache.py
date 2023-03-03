@@ -1,17 +1,18 @@
 from fast_inference.dataset import InferenceDataset
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
-from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer
+from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, HybridServer
 import dgl
 import torch
 from tqdm import tqdm
 from torch.profiler import profile, record_function, ProfilerActivity
 import gc
+import argparse
 
 device = 'cuda'
 
 @torch.no_grad()
-def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
+def main(name, model_name, batch_size, cache_type, subgraph_bias, dir = None, use_gpu_sampling = False):
     BATCH_SIZE = batch_size
     enable_timers()
     clear_timers()
@@ -21,9 +22,15 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     out_size = infer_data.num_classes
 
     # Set up feature server
-    # feat_server = FeatureServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
-    feat_server = CountingFeatServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
-    # feat_server = LFUServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    if cache_type == 'static':
+        feat_server = FeatureServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    elif cache_type == 'count':
+        feat_server = CountingFeatServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    elif cache_type == 'lfu':
+        feat_server = LFUServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    elif cache_type == 'hybrid':
+        feat_server = HybridServer(g, 'cuda', ['feat'], use_pinned_mem=False, profile_hit_rate=True)
+    
     feat_server.init_counts(g.num_nodes())
     # # #!! Use only from partition 1
     # part_mapping = infer_data._orig_nid_partitions
@@ -52,7 +59,7 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
     model.eval()
 
     print(g)
-    trace = infer_data.create_inference_trace(subgraph_bias=0.8)
+    trace = infer_data.create_inference_trace(subgraph_bias=subgraph_bias)
     n = len(trace)
     if infer_data._orig_name == 'reddit':
         n = len(trace) // 10
@@ -100,17 +107,22 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
                 # Create first layer message flow graph by looking at required neighbors
                 all_seeds = torch.cat((required_nodes_unique, new_nid))
 
-                if use_gpu_sampling:
-                    # NOTE roughly 10x faster
-                    frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique.to(device), -1)
-                else:
-                    frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique, -1)
+                with Timer('dgl sample neighbors'):
+                    if use_gpu_sampling:
+                        # NOTE roughly 10x faster
+                        frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique.to(device), -1)
+                    else:
+                        frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique, -1)
 
-                first_mfg = dgl.to_block(frontier, all_seeds) # Need to do cat here as should have target node
+                with Timer('dgl first to block'):
+                    first_mfg = dgl.to_block(frontier, all_seeds) # Need to do cat here as should have target node
 
-                # Create a message flow graph using the new edges
-                mfg = dgl.graph((required_nodes, torch.repeat_interleave(new_nid, interleave_count)))
-                last_mfg = dgl.to_block(mfg, new_nid)
+                with Timer('dgl create mfg graph'):
+                    # Create a message flow graph using the new edges
+                    mfg = dgl.graph((required_nodes, torch.repeat_interleave(new_nid, interleave_count)))
+
+                with Timer('dgl last mfg to block'):
+                    last_mfg = dgl.to_block(mfg, new_nid)
             
                 mfgs.append(first_mfg)
                 mfgs.append(last_mfg)
@@ -130,30 +142,54 @@ def main(name, model_name, batch_size, dir = None, use_gpu_sampling = False):
                 # Force sync
                 x.cpu()
 
+    # prof.export_chrome_trace(f"trace_{model_name}_{name}_{batch_size}_static_cpu_sampling.json")
     print_timer_info()
     if dir != None:
+        if use_gpu_sampling:
+            dir += f'_gpu'
+        if subgraph_bias:
+            dir += f'_bias_{subgraph_bias}'
+        dir += f'_{cache_type}'
         export_timer_info(f'{dir}/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
         feat_server.export_profile(f'{dir}/{model_name.upper()}_cache_info', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser("Benchmark inference system performance")
+    # parser.add_argument('--dataset', type=str, default='ogbn-products',
+                        #    help='datasets: reddit, cora, ogbn-products, ogbn-papers100M')
+    parser.add_argument('-c', '--cache', type=str,
+                           help='Set caching method: static, counting, lfu, hybrid')
+    parser.add_argument('-b', '--subgraph_bias', type=float,
+                        help='TODO')
+    args = parser.parse_args()
+
     # main('cora', 'gcn', 256, True)#, dir='benchmark/data/new_index_select')
     models = ['gcn']#, 'sage', 'gat']
     names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
 
+    path = 'benchmark/data2/new_cache'
+
     use_gpu_sampling = True
     if use_gpu_sampling:
-        path = 'benchmark/data/new_cache_gpu_bias_0.8_count'
-        # names = ['reddit', 'cora', 'ogbn-products']
-        batch_sizes = [1, 64, 128, 256]
-        names = ['ogbn-products']
+        names = ['reddit', 'cora', 'ogbn-products']
+        # batch_sizes = [256]
     else:
-        path = 'benchmark/data/new_cache'
+        # names = ['ogbn-products', 'ogbn-papers100M']
+        names = ['ogbn-papers100M']
+        # names = ['reddit']
 
     for model in models:
         for name in names:
             for batch_size in batch_sizes:
-                main(name=name, model_name=model, batch_size=batch_size, dir=path, use_gpu_sampling=use_gpu_sampling)
+                main(name=name, 
+                     model_name=model, 
+                     batch_size=batch_size, 
+                     cache_type=args.cache, 
+                     subgraph_bias=args.subgraph_bias,
+                     dir=path, 
+                     use_gpu_sampling=use_gpu_sampling)
+                # main(name=name, model_name=model, batch_size=batch_size, dir='benchmark/data/new_cache_gpu_hybrid', use_gpu_sampling=use_gpu_sampling)
                 gc.collect()
                 gc.collect()
                 gc.collect()

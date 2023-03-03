@@ -205,7 +205,8 @@ class LFUServer(FeatureServer):
         with Timer('update counts'):
             self.counts[node_ids] += 1
 
-        res_dict, res_mfg = super().get_features(node_ids, feats, mfgs)
+        with Timer('super get features'):
+            res_dict, res_mfg = super().get_features(node_ids, feats, mfgs)
 
         with Timer('LFU update'):
             # Perform LFU update
@@ -227,6 +228,84 @@ class LFUServer(FeatureServer):
                 # Replace lowest count
                 _, replace_residents = torch.topk(count_of_cache_residents, k=nids_to_add.shape[0], largest=False, sorted=False)
                 replace_nids = resident_mapping[replace_residents]
+
+                cache_slots = self.cache_mapping[replace_nids]
+                self.nid_is_on_gpu[replace_nids] = False
+                self.cache_mapping[replace_nids] = -1
+
+                self.nid_is_on_gpu[nids_to_add] = True
+                self.cache_mapping[nids_to_add] = cache_slots
+
+                old_shape = self.cache[feat].shape
+                
+                # Recall the above truncation - the features we want will be at the front of the result tensor
+                self.cache[feat][cache_slots] = res_dict[feat][cpu_mask][:cache_size]
+                assert(self.cache[feat].shape == old_shape)
+
+        return res_dict, res_mfg
+    
+    
+class HybridServer(FeatureServer):
+    ''' Policy that performs admission/evict per request, but makes admission/eviction
+        decision based on frequency statistic from past k requests.
+    '''
+
+    def init_counts(self, num_total_nodes):
+        self.num_total_nodes = num_total_nodes
+        self.counts = torch.zeros(num_total_nodes)
+
+    def update_cache(self, *args):
+        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+        _, self.cache_candidates = torch.topk(self.counts, self.cache_size, sorted=False)
+        self.is_cache_candidate = torch.zeros(self.counts.shape[0], dtype=bool)
+        self.is_cache_candidate[self.cache_candidates] = True
+
+    def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
+        """Get features for a list of nodes.
+
+        Features are fetched from GPU memory if cached, otherwise from CPU memory.
+
+        Args:
+            node_ids (torch.Tensor): A 1-D tensor of node IDs.
+            feats (List[str]): List of strings corresponding to feature keys that should be fetched.
+        """
+        node_ids = node_ids.cpu()
+        with Timer('update counts'):
+            self.counts[node_ids] += 1
+
+        with Timer('super get features'):
+            res_dict, res_mfg = super().get_features(node_ids, feats, mfgs)
+
+        with Timer('LFU update'):
+            # Perform LFU update
+            # Admission policy is simply allow everything in
+            gpu_mask = self.nid_is_on_gpu[node_ids]
+            cpu_mask = ~gpu_mask
+
+            if hasattr(self, 'is_cache_candidate'):
+                cpu_mask = cpu_mask & self.is_cache_candidate[node_ids]
+
+            # Will want to add cache misses
+            nids_to_add = node_ids[cpu_mask]
+
+            for feat in feats:
+                cache_size = self.cache[feat].shape[0]
+                if nids_to_add.shape[0] > cache_size:
+                    # Truncate if necessary, just take whatever first firts
+                    nids_to_add = nids_to_add[:cache_size]
+
+                if hasattr(self, 'is_cache_candidate'):
+                    # nids that are in cache and can be replaced in this epoch
+                    replace_nid_mask = self.nid_is_on_gpu & ~self.is_cache_candidate
+                                                # total # of nodes    
+                    replace_nids = torch.arange(self.counts.shape[0])[replace_nid_mask][:nids_to_add.shape[0]]
+                else:
+                    count_of_cache_residents = self.counts[self.nid_is_on_gpu]
+                    resident_mapping = torch.arange(self.nid_is_on_gpu.shape[0])[self.nid_is_on_gpu]
+
+                    # Replace lowest count
+                    _, replace_residents = torch.topk(count_of_cache_residents, k=nids_to_add.shape[0], largest=False, sorted=False)
+                    replace_nids = resident_mapping[replace_residents]
 
                 cache_slots = self.cache_mapping[replace_nids]
                 self.nid_is_on_gpu[replace_nids] = False
