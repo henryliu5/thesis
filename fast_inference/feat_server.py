@@ -253,6 +253,7 @@ class HybridServer(FeatureServer):
     def init_counts(self, num_total_nodes):
         self.num_total_nodes = num_total_nodes
         self.counts = torch.zeros(num_total_nodes)
+        self.big_graph_arange = torch.arange(num_total_nodes)
 
     def update_cache(self, *args):
         torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
@@ -276,7 +277,7 @@ class HybridServer(FeatureServer):
         with Timer('super get features'):
             res_dict, res_mfg = super().get_features(node_ids, feats, mfgs)
 
-        with Timer('LFU update'):
+        with Timer('hybrid cache update'):
             # Perform LFU update
             # Admission policy is simply allow everything in
             gpu_mask = self.nid_is_on_gpu[node_ids]
@@ -298,8 +299,9 @@ class HybridServer(FeatureServer):
                     # nids that are in cache and can be replaced in this epoch
                     replace_nid_mask = self.nid_is_on_gpu & ~self.is_cache_candidate
                                                 # total # of nodes    
-                    replace_nids = torch.arange(self.counts.shape[0])[replace_nid_mask][:nids_to_add.shape[0]]
+                    replace_nids = self.big_graph_arange[replace_nid_mask][:nids_to_add.shape[0]]
                 else:
+                    # First generation just uses LFU
                     count_of_cache_residents = self.counts[self.nid_is_on_gpu]
                     resident_mapping = torch.arange(self.nid_is_on_gpu.shape[0])[self.nid_is_on_gpu]
 
