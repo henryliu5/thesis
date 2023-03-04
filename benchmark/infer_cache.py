@@ -2,6 +2,7 @@ from fast_inference.dataset import InferenceDataset
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
 from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, HybridServer
+from fast_inference.sampler import InferenceSampler
 import dgl
 import torch
 from tqdm import tqdm
@@ -12,7 +13,7 @@ from contextlib import nullcontext
 
 device = 'cuda'
 
-@torch.no_grad()
+@torch.inference_mode()
 def main(name, model_name, batch_size, cache_type, subgraph_bias, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=1000, run_profiling=False):
     BATCH_SIZE = batch_size
     enable_timers()
@@ -67,69 +68,18 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, dir = None, us
     if infer_data._orig_name == 'reddit':
         n = len(trace) // 10
 
+    sampler = InferenceSampler(g)
+
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if run_profiling else nullcontext() as prof:
         for i in tqdm(range(0, min(n, MAX_ITERS * BATCH_SIZE), BATCH_SIZE)):
             if i + BATCH_SIZE >= n:
                 continue
 
-            # TODO decide what to do if multiple infer requests for same node id
-            # orig_new_nid = trace.nids[i:i+BATCH_SIZE]
-            new_nid = []
-            adj_nids = []
-            sizes = []
-            s = set()
-            for idx in range(i, i + BATCH_SIZE):
-                if trace.nids[idx].item() not in s:
-                    adj_nids.append(trace.edges[idx]["in"])
-                    sizes.append(trace.edges[idx]["in"].shape[0])
-                    new_nid.append(trace.nids[idx].item())
-                    s.add(trace.nids[idx].item())
-            
-            new_nid = torch.tensor(new_nid)
-            # assert(new_nid.shape == orig_new_nid.shape)
-            # assert(new_nid.shape == new_nid.unique().shape) 
-            if BATCH_SIZE == 1:
-                new_nid = new_nid.reshape(1)
-
             with Timer(name='total'):
                 # TODO make MFG setup work with any batch size and number of layers
                 # TODO see if this MFG setup can be done faster
                 # TODO see GW FastToBlock https://github.com/gwsshs22/dgl/blob/infer-main/src/inference/graph_api.cc
-
-                mfgs = []
-
-                with Timer('sampling', track_cuda=use_gpu_sampling):
-                    # TODO test this batching very carefully
-                    # TODO reason to be suspicious: https://github.com/dmlc/dgl/issues/4512
-                    # required_nodes = torch.cat(adj_nids)
-                    # required_nodes_unique = required_nodes.unique()
-                    # interleave_count = torch.tensor(sizes)
-                    required_nodes = torch.cat([trace.edges[idx]["in"] for idx in range(i, i+BATCH_SIZE)])
-                    required_nodes_unique = required_nodes.unique()
-                    interleave_count = torch.tensor([trace.edges[idx]["in"].shape[0] for idx in range(i, i+BATCH_SIZE)])
-
-                    # Create first layer message flow graph by looking at required neighbors
-                    all_seeds = torch.cat((required_nodes_unique, new_nid))
-
-                    with Timer('dgl sample neighbors'):
-                        if use_gpu_sampling:
-                            # NOTE roughly 10x faster
-                            frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique.to(device), -1)
-                        else:
-                            frontier = dgl.sampling.sample_neighbors(g, required_nodes_unique, -1)
-
-                    with Timer('dgl first to block'):
-                        first_mfg = dgl.to_block(frontier, all_seeds) # Need to do cat here as should have target node
-
-                    with Timer('dgl create mfg graph'):
-                        # Create a message flow graph using the new edges
-                        mfg = dgl.graph((required_nodes, torch.repeat_interleave(new_nid, interleave_count)))
-
-                    with Timer('dgl last mfg to block'):
-                        last_mfg = dgl.to_block(mfg, new_nid)
-                
-                    mfgs.append(first_mfg)
-                    mfgs.append(last_mfg)
+                mfgs = sampler.sample(trace.nids[i:i+BATCH_SIZE], trace.edges[i:i+BATCH_SIZE], use_gpu_sampling=use_gpu_sampling)
 
                 with Timer(name="dataloading", track_cuda=True):
                     required_feats = mfgs[0].ndata['_ID']['_N']
@@ -147,7 +97,7 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, dir = None, us
                     x.cpu()
 
     if run_profiling:
-        prof.export_chrome_trace(f"new_trace_{model_name}_{name}_{batch_size}_{cache_type}{'_bias_0.8' if subgraph_bias is not None else ''}{'_pinned' if use_pinned_mem else ''}.json")
+        prof.export_chrome_trace(f"trace_{model_name}_{name}_{batch_size}_{cache_type}{'_bias_0.8' if subgraph_bias is not None else ''}{'_pinned' if use_pinned_mem else ''}.json")
     print_timer_info()
     if dir != None:
         if use_gpu_sampling:
@@ -214,7 +164,7 @@ if __name__ == '__main__':
                         batch_size=batch_size, 
                         cache_type=args.cache, 
                         subgraph_bias=args.subgraph_bias,
-                        dir=path, 
+                        dir=None, 
                         use_gpu_sampling=use_gpu_sampling,
                         use_pinned_mem=args.use_pinned_mem)
                 # main(name=name, model_name=model, batch_size=batch_size, dir='benchmark/data/new_cache_gpu_hybrid', use_gpu_sampling=use_gpu_sampling)
