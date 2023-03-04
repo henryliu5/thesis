@@ -244,7 +244,35 @@ class LFUServer(FeatureServer):
 
         return res_dict, res_mfg
     
+import ray
+
+@ray.remote
+class FeatureCounter:
+    def __init__(self, num_total_nodes, cache_size):
+        self.num_total_nodes = num_total_nodes
+        self.counts = torch.zeros(num_total_nodes)
+        self.cache_size = cache_size
+        self.is_cache_candidate = None
+        self.counts_still_zero = True
     
+    def incr_counts(self, node_ids):
+        self.counts_still_zero = False
+        self.counts[torch.from_numpy(node_ids)] += 1
+    
+    def window_update(self):
+        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+    
+    def determine_cache_candidates(self):
+        _, cache_candidates = torch.topk(self.counts, self.cache_size, sorted=False)
+        self.is_cache_candidate = torch.zeros(self.counts.shape[0], dtype=bool)
+        self.is_cache_candidate[cache_candidates] = True
+
+    def get_cache_candidates(self):
+        if self.counts_still_zero:
+            return None
+        return self.is_cache_candidate.numpy(force=False)
+    
+
 class HybridServer(FeatureServer):
     ''' Policy that performs admission/evict per request, but makes admission/eviction
         decision based on frequency statistic from past k requests.
@@ -254,12 +282,23 @@ class HybridServer(FeatureServer):
         self.num_total_nodes = num_total_nodes
         self.counts = torch.zeros(num_total_nodes)
         self.big_graph_arange = torch.arange(num_total_nodes)
+        self.remote_counter = FeatureCounter.remote(num_total_nodes, self.cache_size)
+        self.remote_update_future = None
 
     def update_cache(self, *args):
-        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
-        _, self.cache_candidates = torch.topk(self.counts, self.cache_size, sorted=False)
-        self.is_cache_candidate = torch.zeros(self.counts.shape[0], dtype=bool)
-        self.is_cache_candidate[self.cache_candidates] = True
+        self.remote_counter.window_update.remote()
+        # Start new update
+        self.remote_counter.determine_cache_candidates.remote()
+        if self.remote_update_future:
+            self.is_cache_candidate = torch.from_numpy(ray.get(self.remote_update_future))
+            self.remote_update_future = None
+
+        self.remote_update_future = self.remote_counter.get_cache_candidates.remote()
+
+        # torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+        # _, cache_candidates = torch.topk(self.counts, self.cache_size, sorted=False)
+        # self.is_cache_candidate = torch.zeros(self.counts.shape[0], dtype=bool)
+        # self.is_cache_candidate[cache_candidates] = True
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
         """Get features for a list of nodes.
@@ -272,7 +311,8 @@ class HybridServer(FeatureServer):
         """
         node_ids = node_ids.cpu()
         with Timer('update counts'):
-            self.counts[node_ids] += 1
+            self.remote_counter.incr_counts.remote(node_ids.numpy(force = False))
+            # self.counts[node_ids] += 1
 
         with Timer('super get features'):
             res_dict, res_mfg = super().get_features(node_ids, feats, mfgs)
