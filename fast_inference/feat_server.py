@@ -362,11 +362,18 @@ class HybridServer(FeatureServer):
                         required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
 
                 with Timer('CPU-GPU copy', track_cuda=True):
+                    # Need to get small copies out of the way so computations can be done async
+                    # with big transfer from feature copy
                     with Timer('get gpu mask cache indices'):
                         gpu_ids = gpu_node_ids[gpu_mask]
                         gpu_mask = gpu_mask.to(self.device)
                         moved_cpu_mask = cpu_mask.to(self.device)
-                    # default_stream = torch.cuda.current_stream()
+
+                    with Timer('mfg copy'):
+                        if mfgs[0].device == torch.device('cpu'):
+                            # Copy MFGs
+                            mfgs = [mfg.to(self.device) for mfg in mfgs]
+
                     with torch.cuda.stream(self.copy_stream):
                         with Timer('actual copy'):
                             # Copy CPU features
@@ -384,16 +391,14 @@ class HybridServer(FeatureServer):
                             required_gpu_features = self.cache[feat][gpu_mapping]
                             res_tensor[gpu_mask] = required_gpu_features
             
-                with Timer('CPU-GPU copy finish', track_cuda=True):
-                    with Timer('index into res tensor'):
-                        # torch.cuda.current_stream().wait_stream(self.copy_stream)
-                        # torch.cuda.current_stream().wait_stream(self.copy_stream2)
-                        res_tensor[moved_cpu_mask] = cpu_copied_features
-                    with Timer('mfg copy'):
-                        # Copy MFGs
-                        mfgs = [mfg.to(self.device) for mfg in mfgs]
+                # with Timer('CPU-GPU copy finish', track_cuda=True):
+                #     with Timer('index into res tensor'):
+                #         # torch.cuda.current_stream().wait_stream(self.copy_stream)
+                #         # torch.cuda.current_stream().wait_stream(self.copy_stream2)
+                #         res_tensor[moved_cpu_mask] = cpu_copied_features
     
                 res[feat] = res_tensor
+                copied_features[feat] = (cpu_copied_features, moved_cpu_mask)
                 # copied_features[feat] = (cpu_copied_features, cpu_mask, gpu_mapping, gpu_mask)
 
         with Timer('hybrid cache update'):
@@ -414,24 +419,23 @@ class HybridServer(FeatureServer):
                                                 # total # of nodes    
                     replace_nids = self.big_graph_arange[replace_nid_mask][:nids_to_add.shape[0]]
 
-                    cache_slots = self.cache_mapping[replace_nids]
                     self.nid_is_on_gpu[replace_nids] = False
-                    self.cache_mapping[replace_nids] = -1
-
                     self.nid_is_on_gpu[nids_to_add] = True
+                    #! NOTE: Synchronization point since cache mapping is on GPU
+                    cache_slots = self.cache_mapping[replace_nids]
+                    self.cache_mapping[replace_nids] = -1
                     self.cache_mapping[nids_to_add] = cache_slots
 
                     old_shape = self.cache[feat].shape
-                    
                     # Recall the above truncation - the features we want will be at the front of the result tensor
                     self.cache[feat][cache_slots] = res[feat][cpu_mask][:cache_size]
                     assert(self.cache[feat].shape == old_shape)
 
-        # with Timer('finish copy cpu-gpu'):
-        #     for feat in feats:
-        #         torch.cuda.current_stream().wait_stream(self.copy_stream)
-        #         cpu_copied_features, cpu_mask, gpu_mapping, gpu_mask = copied_features[feat]
-        #         res_tensor[cpu_mask] = cpu_copied_features
+        with Timer('finish copy cpu-gpu'):
+            for feat in feats:
+                torch.cuda.current_stream().wait_stream(self.copy_stream)
+                cpu_copied_features, cpu_mask = copied_features[feat]
+                res_tensor[cpu_mask] = cpu_copied_features
 
         #         with Timer('required feat index'):
         #             required_gpu_features = self.cache[feat][gpu_mapping]
