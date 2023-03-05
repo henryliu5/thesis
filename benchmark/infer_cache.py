@@ -10,11 +10,12 @@ from torch.profiler import profile, record_function, ProfilerActivity
 import gc
 import argparse
 from contextlib import nullcontext
+import os
 
 device = 'cuda'
 
 @torch.inference_mode()
-def main(name, model_name, batch_size, cache_type, subgraph_bias, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=1000, run_profiling=False):
+def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=1000, run_profiling=False):
     BATCH_SIZE = batch_size
     enable_timers()
     clear_timers()
@@ -34,13 +35,14 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, dir = None, us
         feat_server = HybridServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
     else:
         print('Cache type', cache_type, 'not supported')
+        exit()
     # # #!! Use only from partition 1
     # part_mapping = infer_data._orig_nid_partitions
     # indices = torch.arange(g.num_nodes())[part_mapping == 2]
 
     # Let's use top 20% of node features for static cache
     out_deg = g.out_degrees()
-    _, indices = torch.topk(out_deg, int(g.num_nodes() * 0.2), sorted=False)
+    _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=False)
     del out_deg
     feat_server.set_static_cache(indices, ['feat'])
     k = 2000
@@ -100,11 +102,14 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, dir = None, us
         prof.export_chrome_trace(f"trace_{model_name}_{name}_{batch_size}_{cache_type}{'_bias_0.8' if subgraph_bias is not None else ''}{'_pinned' if use_pinned_mem else ''}.json")
     print_timer_info()
     if dir != None:
-        if use_gpu_sampling:
-            dir += f'_gpu'
-        if subgraph_bias:
-            dir += f'_bias_{subgraph_bias}'
-        dir += f'_{cache_type}'
+        dir = os.path.join(dir, 'gpu' if use_gpu_sampling else 'cpu')
+
+        if use_pinned_mem:
+            dir = os.path.join(dir, 'pinned')
+
+        dir = os.path.join(dir, f'bias_{subgraph_bias}' if subgraph_bias is not None else 'uniform')
+
+        dir = os.path.join(dir, f'{cache_type}_{cache_percent}')
         export_timer_info(f'{dir}/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
         feat_server.export_profile(f'{dir}/{model_name.upper()}_cache_info', {'name': name, 'batch_size': batch_size})
 
@@ -122,17 +127,17 @@ if __name__ == '__main__':
                            help='Enable cache pinned memory optimization')
     parser.add_argument('--profile', action='store_true',
                            help='Use PyTorch profiler')
+    parser.add_argument('-p', '--cache_percent', type=float, default=0.2,
+                           help="Cache size, represented as a percentage of the overall graph's nodes")
+    
+    parser.add_argument('-o', '--output_path', type=str, default='benchmark/data_cache_10/new_cache',
+                           help='Output path for timing results')
     args = parser.parse_args()
 
     # main('cora', 'gcn', 256, True)#, dir='benchmark/data/new_index_select')
     models = ['gcn']#, 'sage', 'gat']
     names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
     batch_sizes = [1, 64, 128, 256]
-
-    path = 'benchmark/data_cache_10/new_cache'
-
-    if args.use_pinned_mem:
-        path = 'benchmark/data_cache_10_pinned/new_cache'
 
     use_gpu_sampling = True
     if use_gpu_sampling:
@@ -153,6 +158,7 @@ if __name__ == '__main__':
                         batch_size=batch_size, 
                         cache_type=args.cache, 
                         subgraph_bias=args.subgraph_bias,
+                        cache_percent=args.cache_percent,
                         dir=None, 
                         use_gpu_sampling=use_gpu_sampling,
                         use_pinned_mem=args.use_pinned_mem,
@@ -164,7 +170,8 @@ if __name__ == '__main__':
                         batch_size=batch_size, 
                         cache_type=args.cache, 
                         subgraph_bias=args.subgraph_bias,
-                        dir=None, 
+                        cache_percent=args.cache_percent,
+                        dir=args.output_path, 
                         use_gpu_sampling=use_gpu_sampling,
                         use_pinned_mem=args.use_pinned_mem)
                 # main(name=name, model_name=model, batch_size=batch_size, dir='benchmark/data/new_cache_gpu_hybrid', use_gpu_sampling=use_gpu_sampling)
