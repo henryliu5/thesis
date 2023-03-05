@@ -20,6 +20,7 @@ class FeatureServer:
         self.g = g
         self.device = device
         self.nid_is_on_gpu = torch.zeros(g.num_nodes()).bool()
+        # TODO should this go on GPU?
         self.cache_mapping = - \
             torch.ones(g.num_nodes(), device=self.device).long()
         self.cache = {}
@@ -284,6 +285,9 @@ class HybridServer(FeatureServer):
         self.big_graph_arange = torch.arange(num_total_nodes)
         self.remote_counter = FeatureCounter.remote(num_total_nodes, self.cache_size)
         self.remote_update_future = None
+        
+        self.copy_stream = torch.cuda.Stream(device='cuda')
+        self.copy_stream2 = torch.cuda.Stream(device='cuda')
 
     def update_cache(self, *args):
         self.remote_counter.window_update.remote()
@@ -309,57 +313,129 @@ class HybridServer(FeatureServer):
             node_ids (torch.Tensor): A 1-D tensor of node IDs.
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
+        gpu_node_ids = node_ids.to(self.device)
         node_ids = node_ids.cpu()
         with Timer('update counts'):
             self.remote_counter.incr_counts.remote(node_ids.numpy(force = False))
             # self.counts[node_ids] += 1
 
-        with Timer('super get features'):
-            res_dict, res_mfg = super().get_features(node_ids, feats, mfgs)
+        if mfgs is None:
+            mfgs = []
+
+        with Timer('get_features()'):
+            res = {}
+            copied_features = {}
+
+            # Used to mask this particular request - not to mask the cache!!
+            with Timer('compute gpu/cpu mask'):
+                gpu_mask = self.nid_is_on_gpu[node_ids]
+                cpu_mask = ~gpu_mask
+
+            if self.profile:
+                self.profile_info['request_size'].append(node_ids.shape[0])
+                cache_hits = gpu_mask.int().sum().item()
+                self.profile_info['cache_hits'].append(cache_hits)
+                self.profile_info['hit_rate'].append(cache_hits / node_ids.shape[0])
+
+            for feat in feats:
+                feat_shape = list(self.g.ndata[feat].shape[1:])
+                with Timer('allocate res tensor', track_cuda = True):
+                    # Create tensor with shape [number of nodes] x feature shape to hold result
+                    res_tensor = torch.zeros(
+                        tuple([node_ids.shape[0]] + feat_shape), device=self.device)
+
+                # Start copy to GPU mem
+                with Timer('mask cpu feats'):
+                    m = node_ids[cpu_mask]
+                    # Perform resizing if necessary
+                    if self.use_pinned_mem:
+                        if m.shape[0] > self.pinned_buf_dict[feat].shape[0]:
+                            self.pinned_buf_dict[feat] = self.pinned_buf_dict[feat].resize_((m.shape[0], self.pinned_buf_dict[feat].shape[1]))
+                        required_cpu_features = self.pinned_buf_dict[feat].narrow(0, 0, m.shape[0])
+
+                with Timer('feature gather'):
+                    if self.use_pinned_mem:
+                        # Places indices directly into pinned memory buffer
+                        torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
+                    else:
+                        #"slow mode"
+                        required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
+
+                with Timer('CPU-GPU copy', track_cuda=True):
+                    with Timer('get gpu mask cache indices'):
+                        gpu_ids = gpu_node_ids[gpu_mask]
+                        gpu_mask = gpu_mask.to(self.device)
+                        moved_cpu_mask = cpu_mask.to(self.device)
+                    # default_stream = torch.cuda.current_stream()
+                    with torch.cuda.stream(self.copy_stream):
+                        with Timer('actual copy'):
+                            # Copy CPU features
+                            cpu_copied_features = required_cpu_features.to(
+                                self.device, non_blocking=True)
+
+                with Timer('move cached features', track_cuda=True):
+                    # Features from GPU mem
+                    # self.cache_mapping maps the global node id to the respective index in the cache
+                    if feat in self.cache: # hacky drop in for torch.any(gpu_mask)
+                        with torch.cuda.stream(self.copy_stream2):
+                            with Timer('get gpu cache mapping'):
+                                gpu_mapping = self.cache_mapping[gpu_ids]
+                            assert(torch.all(gpu_mapping >= 0))
+                            required_gpu_features = self.cache[feat][gpu_mapping]
+                            res_tensor[gpu_mask] = required_gpu_features
+            
+                with Timer('CPU-GPU copy finish', track_cuda=True):
+                    with Timer('index into res tensor'):
+                        # torch.cuda.current_stream().wait_stream(self.copy_stream)
+                        # torch.cuda.current_stream().wait_stream(self.copy_stream2)
+                        res_tensor[moved_cpu_mask] = cpu_copied_features
+                    with Timer('mfg copy'):
+                        # Copy MFGs
+                        mfgs = [mfg.to(self.device) for mfg in mfgs]
+    
+                res[feat] = res_tensor
+                # copied_features[feat] = (cpu_copied_features, cpu_mask, gpu_mapping, gpu_mask)
 
         with Timer('hybrid cache update'):
-            # Perform LFU update
-            # Admission policy is simply allow everything in
-            gpu_mask = self.nid_is_on_gpu[node_ids]
-            cpu_mask = ~gpu_mask
-
             if hasattr(self, 'is_cache_candidate'):
                 cpu_mask = cpu_mask & self.is_cache_candidate[node_ids]
 
-            # Will want to add cache misses
-            nids_to_add = node_ids[cpu_mask]
+                # Will want to add cache misses
+                nids_to_add = node_ids[cpu_mask]
 
-            for feat in feats:
-                cache_size = self.cache[feat].shape[0]
-                if nids_to_add.shape[0] > cache_size:
-                    # Truncate if necessary, just take whatever first firts
-                    nids_to_add = nids_to_add[:cache_size]
+                for feat in feats:
+                    cache_size = self.cache[feat].shape[0]
+                    if nids_to_add.shape[0] > cache_size:
+                        # Truncate if necessary, just take whatever first
+                        nids_to_add = nids_to_add[:cache_size]
 
-                if hasattr(self, 'is_cache_candidate'):
                     # nids that are in cache and can be replaced in this epoch
                     replace_nid_mask = self.nid_is_on_gpu & ~self.is_cache_candidate
                                                 # total # of nodes    
                     replace_nids = self.big_graph_arange[replace_nid_mask][:nids_to_add.shape[0]]
-                else:
-                    # First generation just uses LFU
-                    count_of_cache_residents = self.counts[self.nid_is_on_gpu]
-                    resident_mapping = torch.arange(self.nid_is_on_gpu.shape[0])[self.nid_is_on_gpu]
 
-                    # Replace lowest count
-                    _, replace_residents = torch.topk(count_of_cache_residents, k=nids_to_add.shape[0], largest=False, sorted=False)
-                    replace_nids = resident_mapping[replace_residents]
+                    cache_slots = self.cache_mapping[replace_nids]
+                    self.nid_is_on_gpu[replace_nids] = False
+                    self.cache_mapping[replace_nids] = -1
 
-                cache_slots = self.cache_mapping[replace_nids]
-                self.nid_is_on_gpu[replace_nids] = False
-                self.cache_mapping[replace_nids] = -1
+                    self.nid_is_on_gpu[nids_to_add] = True
+                    self.cache_mapping[nids_to_add] = cache_slots
 
-                self.nid_is_on_gpu[nids_to_add] = True
-                self.cache_mapping[nids_to_add] = cache_slots
+                    old_shape = self.cache[feat].shape
+                    
+                    # Recall the above truncation - the features we want will be at the front of the result tensor
+                    self.cache[feat][cache_slots] = res[feat][cpu_mask][:cache_size]
+                    assert(self.cache[feat].shape == old_shape)
 
-                old_shape = self.cache[feat].shape
-                
-                # Recall the above truncation - the features we want will be at the front of the result tensor
-                self.cache[feat][cache_slots] = res_dict[feat][cpu_mask][:cache_size]
-                assert(self.cache[feat].shape == old_shape)
+        # with Timer('finish copy cpu-gpu'):
+        #     for feat in feats:
+        #         torch.cuda.current_stream().wait_stream(self.copy_stream)
+        #         cpu_copied_features, cpu_mask, gpu_mapping, gpu_mask = copied_features[feat]
+        #         res_tensor[cpu_mask] = cpu_copied_features
 
-        return res_dict, res_mfg
+        #         with Timer('required feat index'):
+        #             required_gpu_features = self.cache[feat][gpu_mapping]
+        #         with Timer('move into result tensor'):
+        #             res_tensor[gpu_mask] = required_gpu_features
+
+        return res, mfgs
