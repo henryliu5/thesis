@@ -426,17 +426,20 @@ class HybridServer(FeatureServer):
                     self.cache_mapping[replace_nids] = -1
                     self.cache_mapping[nids_to_add] = cache_slots
 
+                    with Timer('finish copy cpu-gpu'):
+                        torch.cuda.current_stream().wait_stream(self.copy_stream)
+                        cpu_copied_features, orig_cpu_mask = copied_features[feat]
+                        res_tensor[orig_cpu_mask] = cpu_copied_features
+
                     old_shape = self.cache[feat].shape
                     # Recall the above truncation - the features we want will be at the front of the result tensor
                     self.cache[feat][cache_slots] = res[feat][cpu_mask][:cache_size]
                     assert(self.cache[feat].shape == old_shape)
-
-        with Timer('finish copy cpu-gpu'):
-            for feat in feats:
-                torch.cuda.current_stream().wait_stream(self.copy_stream)
-                cpu_copied_features, cpu_mask = copied_features[feat]
-                res_tensor[cpu_mask] = cpu_copied_features
-
+            else:
+                with Timer('finish copy cpu-gpu'):
+                    torch.cuda.current_stream().wait_stream(self.copy_stream)
+                    cpu_copied_features, orig_cpu_mask = copied_features[feat]
+                    res_tensor[orig_cpu_mask] = cpu_copied_features
         #         with Timer('required feat index'):
         #             required_gpu_features = self.cache[feat][gpu_mapping]
         #         with Timer('move into result tensor'):
