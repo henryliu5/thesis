@@ -19,12 +19,13 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
     BATCH_SIZE = batch_size
     enable_timers()
     clear_timers()
-    infer_data = InferenceDataset(name, 0.1, force_reload=False, verbose=True)
+    infer_data = InferenceDataset(name, 0.1, partitions=5, force_reload=False, verbose=True)
     g = infer_data[0]
     in_size = g.ndata["feat"].shape[1]
     out_size = infer_data.num_classes
 
     # Set up feature server
+    cache_type = cache_type or 'baseline'
     if cache_type == 'static':
         feat_server = FeatureServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
     elif cache_type == 'count':
@@ -33,6 +34,8 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         feat_server = LFUServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
     elif cache_type == 'hybrid' or cache_type == 'async':
         feat_server = HybridServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+    elif cache_type == 'baseline':
+        feat_server = None
     else:
         print('Cache type', cache_type, 'not supported')
         exit()
@@ -40,37 +43,41 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
     # part_mapping = infer_data._orig_nid_partitions
     # indices = torch.arange(g.num_nodes())[part_mapping == 2]
 
-    # Let's use top 20% of node features for static cache
-    out_deg = g.out_degrees()
-    _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=False)
-    del out_deg
-    feat_server.set_static_cache(indices, ['feat'])
-    k = 2000
-    processed = 0
+    if feat_server:
+        # Let's use top 20% of node features for static cache
+        out_deg = g.out_degrees()
+        _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=False)
+        del out_deg
+        feat_server.set_static_cache(indices, ['feat'])
+        k = 2000
+        processed = 0
 
-    print('Caching', indices.shape[0], 'nodes')
-    del indices
-    gc.collect()
+        print('Caching', indices.shape[0], 'nodes')
+        del indices
+        gc.collect()
     
-    # Need to do this BEFORE converting to logical graph since nodes will be removed
-    feat_server.init_counts(g.num_nodes())
+        # Need to do this BEFORE converting to logical graph since nodes will be removed
+        feat_server.init_counts(g.num_nodes())
+    elif use_pinned_mem:
+        pin_buf = torch.empty((150_000, g.ndata['feat'].shape[1]), dtype=torch.float, pin_memory=True)
+
     # Convert our graph into just a "logical" graph, all features live in the feature server
-    g = dgl.graph(g.edges())
+    logical_g = dgl.graph(g.edges())
 
     if use_gpu_sampling:
-        g = g.to(device)
+        logical_g = logical_g.to(device)
         
     # Model goes on DEVICE
     model = load_model(model_name, in_size, out_size).to(device)
     model.eval()
 
-    print(g)
+    print(logical_g)
     trace = infer_data.create_inference_trace(subgraph_bias=subgraph_bias)
     n = len(trace)
     if infer_data._orig_name == 'reddit':
         n = len(trace) // 10
 
-    sampler = InferenceSampler(g)
+    sampler = InferenceSampler(logical_g)
 
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if run_profiling else nullcontext() as prof:
         for i in tqdm(range(0, min(n, MAX_ITERS * BATCH_SIZE), BATCH_SIZE)):
@@ -85,13 +92,34 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
 
                 with Timer(name="dataloading", track_cuda=True):
                     required_feats = mfgs[0].ndata['_ID']['_N']
-                    with Timer(name="update cache", track_cuda=True):
-                        if (i // k) > processed + 1:
-                            feat_server.update_cache(['feat'])
-                            processed = i // k  
+                    if feat_server:
+                        # Cache: (update) + feature gather + CPU-GPU copy
+                        with Timer(name="update cache", track_cuda=True):
+                            if (i // k) > processed + 1:
+                                feat_server.update_cache(['feat'])
+                                processed = i // k  
 
-                    inputs, mfgs = feat_server.get_features(required_feats, feats=['feat'], mfgs=mfgs)
-                    inputs = inputs['feat']
+                        inputs, mfgs = feat_server.get_features(required_feats, feats=['feat'], mfgs=mfgs)
+                        inputs = inputs['feat']
+                    else:
+                        required_feats = required_feats.cpu()
+                        if use_pinned_mem:
+                            with Timer('resize pin buf'):
+                                pin_buf = pin_buf.resize_((required_feats.shape[0], pin_buf.shape[1]))
+                            inputs = pin_buf.narrow(0, 0, required_feats.shape[0])
+
+                        # Baseline: feature gather + CPU-GPU copy
+                        with Timer('feature gather'):
+                            if use_pinned_mem:
+                                torch.index_select(g.ndata['feat'], 0, required_feats, out=inputs)
+                            else:
+                                inputs = g.ndata['feat'][required_feats]
+
+                        with Timer(name="CPU-GPU copy", track_cuda=True):
+                            mfgs[0] = mfgs[0].to(device)
+                            mfgs[1] = mfgs[1].to(device)
+                            inputs = inputs.to(device)
+                    
 
                 with Timer(name='model', track_cuda=True):
                     x = model(mfgs, inputs)
@@ -109,9 +137,14 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
 
         dir = os.path.join(dir, f'bias_{subgraph_bias}' if subgraph_bias is not None else 'uniform')
 
-        dir = os.path.join(dir, f'{cache_type}_{cache_percent}')
+        if cache_type == 'baseline':
+            dir = os.path.join(dir, cache_type)
+        else:
+            dir = os.path.join(dir, f'{cache_type}_{cache_percent}')
+
         export_timer_info(f'{dir}/{model_name.upper()}', {'name': name, 'batch_size': batch_size})
-        feat_server.export_profile(f'{dir}/{model_name.upper()}_cache_info', {'name': name, 'batch_size': batch_size})
+        if feat_server:
+            feat_server.export_profile(f'{dir}/{model_name.upper()}_cache_info', {'name': name, 'batch_size': batch_size})
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Benchmark inference system performance")
