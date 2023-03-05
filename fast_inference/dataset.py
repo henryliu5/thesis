@@ -160,7 +160,9 @@ class InferenceDataset(DGLDataset):
             if self._orig_name == 'ogbn-arxiv':
                 # Add reverse edges since ogbn-arxiv is unidirectional.
                 self._orig_graph = dgl.add_reverse_edges(self._orig_graph)
-            self._orig_nid_partitions = dgl.metis_partition_assignment(self._orig_graph, self._num_partitions)
+            # TODO support partitioning for ogbn-papers100M
+            if self._orig_name != 'ogbn-papers100M':
+                self._orig_nid_partitions = dgl.metis_partition_assignment(dgl.graph(self._orig_graph.edges()), self._num_partitions)
             self._num_classes = self._dataset.num_classes
             return
 
@@ -294,6 +296,8 @@ class InferenceDataset(DGLDataset):
             generated_indices = th.randperm(self.num_infer_targets)[:trace_len]
         else:
             assert (subgraph_bias >= 0 and subgraph_bias <= 1)
+            # TODO support partitioning for ogbn-papers100M
+            assert (self._orig_name != 'ogbn-papers100M'), "Partitioning for ogbn-papers100M not supported"
             # TODO actually parallelize with torch/numpy ops
             generated_indices = []
             # Whether a nid has been used yet in the trace
@@ -358,7 +362,7 @@ class InferenceDataset(DGLDataset):
         info_path = os.path.join(self.save_path, '_info.pkl')
         save_info(info_path, {'num_infer_targets': self._num_infer_targets,
                               'num_classes': self._num_classes,
-                              'orig_nid_partitions': self._orig_nid_partitions})
+                              'orig_nid_partitions': None if type(self._orig_nid_partitions ) == type(None) else self._orig_nid_partitions})
 
     def load(self):
         # load processed data from directory `self.save_path`
@@ -370,7 +374,7 @@ class InferenceDataset(DGLDataset):
         trace_info = load_info(info_path)
         self._num_infer_targets = trace_info['num_infer_targets']
         self._num_classes = trace_info['num_classes']
-        self._orig_nid_partitions = trace_info['orig_nid_partitions']
+        self._orig_nid_partitions = trace_info.get('orig_nid_partitions')
 
     def has_cache(self):
         # check whether there are processed data in `self.save_path`
