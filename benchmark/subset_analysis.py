@@ -37,7 +37,7 @@ import math
 #         in_mask = self.cache_mask[request_nids]
 #         return torch.count_nonzero(in_mask.int())
 
-class CountingCache:
+class PartitionCache:
     UPDATES_TO_DECREMENT = 5
     ''' LFU-like cache, can be updated with update_cache '''
     # NOTE: very good cache hit rate with update every 250, 5 partitions``
@@ -141,6 +141,139 @@ class CountingCache:
         return torch.count_nonzero(in_mask.int())
     
 
+class CountingCache:
+    UPDATES_TO_DECREMENT = 10
+    ''' LFU-like cache, can be updated with update_cache '''
+
+    def __init__(self, init_indices, num_total_nodes, max_updates = 10000):
+        # TODO figure out why changing max updates significantly affects hit rate
+        self.num_total_nodes = num_total_nodes
+        self.cache_size = init_indices.shape[0]
+        self.cache_mask = torch.zeros(num_total_nodes, dtype=torch.bool)
+        self.counts = torch.zeros(num_total_nodes)
+
+        self.cache_mask[init_indices] = True
+        self.cache_mapping = -1 * torch.ones(num_total_nodes).long()
+        self.cache_mapping[init_indices] = torch.arange(self.cache_size)
+
+        self.reverse_mapping = init_indices
+        self.max_updates = max_updates
+
+        self.num_updates = 0
+        
+
+    def update_cache(self):
+        assert(torch.count_nonzero(self.cache_mask.int()).item() == self.cache_size)
+        _, worst_cache_idxs = torch.topk(self.counts[self.cache_mask], self.max_updates, largest=False, sorted=True)
+        _, most_common_nids = torch.topk(self.counts, self.cache_size + self.max_updates, sorted=True)
+
+        remove_nids = self.reverse_mapping[worst_cache_idxs]
+        # Make it okay to keep the best parts of the worst partition
+        # self.cache_mask[remove_nids] = False
+
+        best_not_in_cache = most_common_nids[self.cache_mask[most_common_nids] == False]
+        best_not_in_cache = best_not_in_cache[:self.max_updates]
+
+
+        # Need to be sorted in descending order of hit frequency
+        _, sort_idx = torch.sort(self.counts[remove_nids], descending=True)
+        remove_nids = remove_nids[sort_idx]
+
+        print(self.counts[best_not_in_cache])
+        print(self.counts[remove_nids])
+        # print('frequencies of nids being removed', self.counts[remove_nids])
+        # s, _ = torch.sort(remove_nids)
+        # print('indices of nids being removed:', s)
+        
+        n = best_not_in_cache.shape[0]
+        assert(best_not_in_cache.shape[0] == n)
+        assert(remove_nids.shape[0] == n)
+
+        i1 = 0
+        i2 = 0
+        while i1 + i2 < n:
+            if self.counts[best_not_in_cache[i1]] > self.counts[remove_nids[i2]]:
+                # Add to cache
+                i1 += 1    
+            else:
+                # Keep in cache
+                i2 += 1
+        # improvement_mask = self.counts[best_not_in_cache] > self.counts[remove_nids]
+
+        best_not_in_cache = best_not_in_cache[:i1]
+        remove_nids = remove_nids[i2:]
+
+        print(best_not_in_cache.shape, remove_nids.shape)
+        worst_cache_idxs = self.cache_mapping[remove_nids]
+
+        # Mask off to just be the ones where the update is better
+        # i1 = 0
+        # i2 = 0
+        # replace_idx = n - 1
+        # mask = []
+        # mapping = []
+        # while i1 < n and i2 < n:
+        #     if self.counts[best_not_in_cache[i1]] > self.counts[remove_nids[i2]]:
+        #         # Add element not in cache
+        #         mask.append(True)
+        #         mapping.append(replace_idx)
+        #         replace_idx -= 1
+        #     else:
+        #         # Keep in cache
+        #         i2 += 1
+        #         mask.append(False)
+        #     i1 += 1
+
+        # improvement_mask = torch.tensor(mask)
+        # # improvement_mask = self.counts[best_not_in_cache] > self.counts[remove_nids]
+
+        # best_not_in_cache = best_not_in_cache[improvement_mask]
+        # remove_nids = remove_nids[improvement_mask]
+
+        # best_not_in_cache = best_not_in_cache[torch.tensor(mapping, dtype=torch.long)]
+        # print(best_not_in_cache.shape, remove_nids.shape)
+        # worst_cache_idxs = self.cache_mapping[remove_nids]
+
+
+        current_worst_avg_count = torch.mean(self.counts[remove_nids]).item()
+        replace_avg_count = torch.mean(self.counts[best_not_in_cache]).item()
+
+        if current_worst_avg_count < replace_avg_count:
+            # print('cache size', self.cache_size)
+            # print('true in mask', torch.count_nonzero(self.cache_mask.int()).item())
+            self.cache_mask[remove_nids] = False
+            self.cache_mapping[remove_nids] = -1
+
+            self.cache_mapping[best_not_in_cache] = worst_cache_idxs
+            self.reverse_mapping[worst_cache_idxs] = best_not_in_cache
+            self.cache_mask[best_not_in_cache] = True
+
+            # print('finished cache', self.counts[self.reverse_mapping[worst_cache_idxs]])
+            print('Replacing', current_worst_avg_count, 'with', replace_avg_count)
+            # print('true in mask', torch.count_nonzero(self.cache_mask.int()).item())
+
+
+        assert(torch.count_nonzero(self.cache_mask.int()).item() == self.cache_size)
+
+
+        if self.num_updates % self.UPDATES_TO_DECREMENT == 0:
+            # Divide total counts in half
+            torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+
+        self.num_updates += 1
+    
+    def check_cache(self, request_nids) -> int:
+        ''' Return how many of request_nids are in the cache (how many cache hits).
+            
+            Also updates the summary statistics.
+        '''
+        self.counts[request_nids] += 1
+        in_mask = self.cache_mask[request_nids]
+
+        cache_slots = self.cache_mapping[request_nids[in_mask]]
+        assert(torch.all(cache_slots >= 0))
+        return torch.count_nonzero(in_mask.int())
+
 def main():
     # infer_data = InferenceDataset('reddit', 0.1, verbose=True)
     infer_data = InferenceDataset('ogbn-products', 0.1, verbose=True)
@@ -161,7 +294,7 @@ def main():
 
     # Check LFU-ish cache 
     cache = CountingCache(indices, g.num_nodes())
-    k = 50
+    k = 250
     print('LFU update frequency:', k, 'requests')
 
     g = dgl.graph(g.edges(), device='cuda')
