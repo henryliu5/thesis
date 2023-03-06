@@ -143,7 +143,13 @@ class PartitionCache:
 
 class CountingCache:
     UPDATES_TO_DECREMENT = 10
-    ''' LFU-like cache, can be updated with update_cache '''
+    ''' LFU-like cache, can be updated with update_cache 
+        Partition 0, 66.25 % neighbors in subgraph, 80.00 % seed in subgraph, 52.45 % in topk, 78.71 % in LFU, bias is 0.8                                         
+        Partition 1, 59.99 % neighbors in subgraph, 80.10 % seed in subgraph, 50.14 % in topk, 73.48 % in LFU, bias is 0.8                                         
+        Partition 2, 64.57 % neighbors in subgraph, 79.97 % seed in subgraph, 55.40 % in topk, 81.49 % in LFU, bias is 0.8                                         
+        Partition 3, 71.17 % neighbors in subgraph, 79.99 % seed in subgraph, 51.94 % in topk, 85.09 % in LFU, bias is 0.8                                         
+        Partition 4, 54.17 % neighbors in subgraph, 57.43 % seed in subgraph, 56.13 % in topk, 74.54 % in LFU, bias is 0.8                                         
+    '''
 
     def __init__(self, init_indices, num_total_nodes, max_updates = 10000):
         # TODO figure out why changing max updates significantly affects hit rate
@@ -179,11 +185,8 @@ class CountingCache:
         _, sort_idx = torch.sort(self.counts[remove_nids], descending=True)
         remove_nids = remove_nids[sort_idx]
 
-        print(self.counts[best_not_in_cache])
-        print(self.counts[remove_nids])
-        # print('frequencies of nids being removed', self.counts[remove_nids])
-        # s, _ = torch.sort(remove_nids)
-        # print('indices of nids being removed:', s)
+        # print(self.counts[best_not_in_cache])
+        # print(self.counts[remove_nids])
         
         n = best_not_in_cache.shape[0]
         assert(best_not_in_cache.shape[0] == n)
@@ -198,12 +201,11 @@ class CountingCache:
             else:
                 # Keep in cache
                 i2 += 1
-        # improvement_mask = self.counts[best_not_in_cache] > self.counts[remove_nids]
 
         best_not_in_cache = best_not_in_cache[:i1]
         remove_nids = remove_nids[i2:]
 
-        print(best_not_in_cache.shape, remove_nids.shape)
+        # print(best_not_in_cache.shape, remove_nids.shape)
         worst_cache_idxs = self.cache_mapping[remove_nids]
 
         # Mask off to just be the ones where the update is better
@@ -249,7 +251,7 @@ class CountingCache:
             self.cache_mask[best_not_in_cache] = True
 
             # print('finished cache', self.counts[self.reverse_mapping[worst_cache_idxs]])
-            print('Replacing', current_worst_avg_count, 'with', replace_avg_count)
+            # print('Replacing', current_worst_avg_count, 'with', replace_avg_count)
             # print('true in mask', torch.count_nonzero(self.cache_mask.int()).item())
 
 
