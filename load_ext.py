@@ -1,11 +1,11 @@
 import torch
-import fast_cpp
+import pybind_example
 
-print(fast_cpp.rand_tensor())
+print(pybind_example.rand_tensor())
 print(torch.cuda.get_device_properties(torch.device('cuda')))
 
 t = torch.tensor([1, 2, 3, 4])
 print(t)
-t = fast_cpp.incr(t)
+t = pybind_example.incr(t)
 print(t)
-fast_cpp.print_neg(t)
+pybind_example.print_neg(t)

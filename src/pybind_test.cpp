@@ -21,7 +21,7 @@ void print_neg(torch::Tensor t){
     std::cout << (-1 * t) << std::endl;
 }
 
-PYBIND11_MODULE(fast_cpp_test, m) {
+PYBIND11_MODULE(pybind_example, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
 
     m.def("add", &add, "A function that adds two numbers");
