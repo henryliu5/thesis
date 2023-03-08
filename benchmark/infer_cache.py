@@ -14,7 +14,8 @@ import os
 
 device = 'cuda'
 
-@torch.inference_mode()
+# TODO figure out how to enable inference mode and still make cpp cache server work
+# @torch.inference_mode()
 def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=1000, run_profiling=False):
     BATCH_SIZE = batch_size
     enable_timers()
