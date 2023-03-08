@@ -1,7 +1,7 @@
 from fast_inference.dataset import InferenceDataset
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
-from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, HybridServer
+from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, HybridServer, ManagedCacheServer
 from fast_inference.sampler import InferenceSampler
 import dgl
 import torch
@@ -36,6 +36,8 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         feat_server = HybridServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
     elif cache_type == 'baseline':
         feat_server = None
+    elif cache_type == 'cpp':
+        feat_server = ManagedCacheServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
     else:
         print('Cache type', cache_type, 'not supported')
         exit()

@@ -4,6 +4,7 @@
 #include <torch/torch.h>
 #include <unordered_map>
 #include <functional>
+#include <pthread.h>
 
 #ifndef NDEBUG
 #   define ASSERT(condition, message) \
@@ -26,9 +27,9 @@ class CacheManager {
      *  Computes cache usage statistics and performs dynamic cache updates.
      */
 private:
-    torch::Tensor counts;
     int cache_size;
     int update_frequency;
+    int decay_frequency;
     int staging_area_size;
 
     // TODO switch to Boost lockfree queue if multiple producers
@@ -47,6 +48,7 @@ private:
     torch::Tensor cache;
 
     // CacheManager specific cache metadata
+    torch::Tensor counts;
     std::atomic<long> started_threads;
     std::atomic<long> finished_threads;
     torch::Tensor cpu_staging_area;
@@ -77,7 +79,8 @@ private:
 
         // 2. Wait for enough threads to finish
         long fetchers_at_start = started_threads.load();
-        while (finished_threads.load() < fetchers_at_start)
+        //!! Need to make sure worker is alive in this loop!
+        while (finished_threads.load() < fetchers_at_start && worker_alive)
             ;
 
         // 3a. Perform remappings
@@ -98,26 +101,53 @@ private:
 
     void worker()
     {
+        pthread_setname_np(pthread_self(), "CacheManager worker");
         // Starts at 1 just to skip update
         int requests_handled = 1;
         while (worker_alive) {
             if (!q.empty()) {
                 torch::Tensor nids = q.front();
-                // std::cout << nids << std::endl;
                 // Probably should go after the q.pop but now you can wait for
-                torch::Tensor nid_cur_counts = counts.index({nids});
-                // std::cout << nid_cur_counts << std::endl;
-                
-                // TODO - assumes nids are unique, can use torch::bincount if not
-                counts.index_put_({nids}, nid_cur_counts + 1);
-                // std::cout << "new" << counts << std::endl;
+                // the sum to finish
+                if(nids.sizes()[0] > 0){
+                    ASSERT ((nids.max().item<long>() < counts.sizes()[0]), "Invalid node id received at manager " << nids.max());
+                    ASSERT ((nids.min().item<long>() >= 0), "Invalid node id received at manager " << nids.min());
+                    // std::cout << nids << std::endl;
+                    
+                    // torch::Tensor nid_cur_counts = counts.index({nids});
+                    // // TODO - assumes nids are unique, can use torch::bincount if not
+                    // torch::Tensor new_nids_counts = nid_cur_counts + 1;
+
+                    // std::cout << "nids dtype: " << nids.dtype() <<endl;
+                    // std::cout << "new_nids_counts dtype: " << new_nids_counts.dtype() << endl;
+                    // cout << "nids " << nids.sizes()[0] << " " << nids.device() << endl;
+                    // cout << "new nid counts " << new_nids_counts.sizes()[0] << " " << new_nids_counts.device() << endl;
+                    // cout << "counts " << counts.sizes()[0] << " " << counts.device() << endl;
+                    // // cout << nids << endl;
+                    // std::cout << "counts size: " << counts.sizes()[0] << endl;
+                    // cout << "max 2: " << nids.max().item<long>() << endl;
+                    // cout << "max 2: " << nids.min().item<long>() << endl;
+
+                    // counts.index_put_({nids}, new_nids_counts);
+
+                    torch::Tensor hist = nids.bincount({}, counts.sizes()[0]);
+                    // cout << hist.sizes()[0] << endl;
+                    counts += hist;
+                    // std::cout << "new" << counts << std::endl;
+
+                }
                 q.pop();
                 requests_handled++;
+                cout << "handled: " << requests_handled << "\n";
+            }
+
+            if(decay_frequency != 0 && requests_handled % decay_frequency == 0){
+                counts.div_(2, "floor");
             }
 
             // Cache update
             if(update_frequency != 0 && requests_handled % update_frequency == 0) {
-                cout << "starting stats" << endl;
+                // cout << "starting stats" << endl;
                 // Compute cache statistic
                 torch::Tensor add_nids = getMostCommonNodesNotInCache(staging_area_size);
                 torch::Tensor replace_cache_idxs = getLeastUsedCacheIndices(staging_area_size);
@@ -153,12 +183,15 @@ private:
 
 
 public:
-    CacheManager(const int num_total_nodes, const int cache_size, const int update_frequency, const int staging_area_size)
+    CacheManager(const int num_total_nodes, const int cache_size, const int update_frequency, const int decay_frequency, const int staging_area_size)
         : cache_size(cache_size)
         , worker_alive(true)
         , worker_thread(&CacheManager::worker, this)
         , update_frequency(update_frequency)
+        , decay_frequency(decay_frequency)
         , staging_area_size(staging_area_size)
+        , started_threads(0)
+        , finished_threads(0)
     {
         ASSERT (staging_area_size <= cache_size, "staging_area_size must be smaller than the cache size, staging_area_size: " << staging_area_size << " cache_size: " << cache_size);
         counts = torch::zeros(num_total_nodes, torch::dtype(torch::kLong));
@@ -222,6 +255,7 @@ public:
     void threadExit()
     {
         finished_threads++;
+        cout << "finished: " << finished_threads << "\n";
     }
 
     torch::Tensor getMostCommonNodesNotInCache(int k){
