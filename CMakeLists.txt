@@ -3,7 +3,7 @@ project(fast_inference)
 
 find_package(pybind11 REQUIRED)
 find_package(Torch REQUIRED)
-find_package(Boost)
+find_package(Boost COMPONENTS thread system REQUIRED)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 

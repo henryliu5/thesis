@@ -48,14 +48,15 @@ if __name__ == '__main__':
 
           'benchmark/fast_data/new_cache_gpu_static',
           'benchmark/fast_data/new_cache_gpu_count',
-          'benchmark/fast_data/new_cache_gpu_lfu',
+        #   'benchmark/fast_data/new_cache_gpu_lfu',
           'benchmark/fast_data/new_cache_gpu_async',
+          'fast_sampling/gpu/pinned/uniform/cpp_0.2', 
         #   'benchmark/fast_data/new_cache_gpu_bias_0.8_static',
         #   'benchmark/fast_data/new_cache_gpu_bias_0.8_count',
         #   'benchmark/fast_data/new_cache_gpu_bias_0.8_lfu',
         #   'benchmark/fast_data/new_cache_gpu_bias_0.8_async', 
           ],
-           ['Static (Degree)', 'Counting', 'LFU', 'Async']
+           ['Static (Degree)', 'Counting', 'Async', 'CPP']
            , 'GCN', 'ogbn-products', 256)
 
     main([
@@ -63,6 +64,7 @@ if __name__ == '__main__':
           'benchmark/fast_data/new_cache_gpu_bias_0.8_count',
           'benchmark/fast_data/new_cache_gpu_bias_0.8_lfu',
           'benchmark/fast_data/new_cache_gpu_bias_0.8_async', 
+          'fast_sampling/gpu/pinned/bias_0.8/cpp_0.2', 
           ],
-           ['Static (Degree)', 'Counting', 'LFU', 'Async']
+           ['Static (Degree)', 'Counting', 'LFU', 'Async', 'CPP']
            , 'GCN', 'ogbn-products', 256, f'_biased')

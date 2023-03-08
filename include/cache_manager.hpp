@@ -1,10 +1,16 @@
 #include <boost/lockfree/spsc_queue.hpp>
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/condition_variable.hpp>
+#include <boost/thread.hpp>
 #include <queue>
 #include <thread>
 #include <torch/torch.h>
 #include <unordered_map>
 #include <functional>
 #include <pthread.h>
+#include <queue>
+#include "concurrentqueue.hpp"
+
 
 #ifndef NDEBUG
 #   define ASSERT(condition, message) \
@@ -22,6 +28,65 @@
 using torch::indexing::Slice, torch::indexing::None;
 using std::cout, std::endl;
 
+template<typename Data>
+class concurrent_queue
+{
+private:
+    std::queue<Data> the_queue;
+    mutable boost::mutex the_mutex;
+    boost::condition_variable the_condition_variable;
+    bool alive = true;
+public:
+    void disable(){
+        alive = false;
+        the_condition_variable.notify_all();
+    }
+
+    void push(Data const& data)
+    {
+        boost::mutex::scoped_lock lock(the_mutex);
+        the_queue.push(data);
+        lock.unlock();
+        the_condition_variable.notify_one();
+    }
+
+    bool empty() const
+    {
+        boost::mutex::scoped_lock lock(the_mutex);
+        return the_queue.empty();
+    }
+
+    bool try_pop(Data& popped_value)
+    {
+        boost::mutex::scoped_lock lock(the_mutex);
+        if(the_queue.empty())
+        {
+            return false;
+        }
+        
+        popped_value=the_queue.front();
+        the_queue.pop();
+        return true;
+    }
+
+    bool wait_and_pop(Data& popped_value)
+    {
+        boost::mutex::scoped_lock lock(the_mutex);
+        while(the_queue.empty())
+        {
+            the_condition_variable.wait(lock);
+            if(!alive){
+                return false;
+            }
+        }
+        
+        popped_value=the_queue.front();
+        the_queue.pop();
+        return true;
+    }
+
+};
+
 class CacheManager {
     /** Controls cache state.
      *  Computes cache usage statistics and performs dynamic cache updates.
@@ -33,7 +98,9 @@ private:
     int staging_area_size;
 
     // TODO switch to Boost lockfree queue if multiple producers
-    boost::lockfree::spsc_queue<torch::Tensor, boost::lockfree::capacity<1024>> q;
+    // boost::lockfree::spsc_queue<torch::Tensor, boost::lockfree::capacity<1024>> q;
+    // moodycamel::ConcurrentQueue<torch::Tensor> q;
+    concurrent_queue<torch::Tensor> q;
 
     //!! The order here is important since worker_alive must be intialized first
     volatile bool worker_alive;
@@ -105,48 +172,88 @@ private:
         // Starts at 1 just to skip update
         int requests_handled = 1;
         while (worker_alive) {
-            if (!q.empty()) {
-                torch::Tensor nids = q.front();
-                // Probably should go after the q.pop but now you can wait for
-                // the sum to finish
-                if(nids.sizes()[0] > 0){
-                    ASSERT ((nids.max().item<long>() < counts.sizes()[0]), "Invalid node id received at manager " << nids.max());
-                    ASSERT ((nids.min().item<long>() >= 0), "Invalid node id received at manager " << nids.min());
-                    // std::cout << nids << std::endl;
-                    
-                    // torch::Tensor nid_cur_counts = counts.index({nids});
-                    // // TODO - assumes nids are unique, can use torch::bincount if not
-                    // torch::Tensor new_nids_counts = nid_cur_counts + 1;
+            bool decay = false;
+            bool update = false;
 
-                    // std::cout << "nids dtype: " << nids.dtype() <<endl;
-                    // std::cout << "new_nids_counts dtype: " << new_nids_counts.dtype() << endl;
-                    // cout << "nids " << nids.sizes()[0] << " " << nids.device() << endl;
-                    // cout << "new nid counts " << new_nids_counts.sizes()[0] << " " << new_nids_counts.device() << endl;
-                    // cout << "counts " << counts.sizes()[0] << " " << counts.device() << endl;
-                    // // cout << nids << endl;
-                    // std::cout << "counts size: " << counts.sizes()[0] << endl;
-                    // cout << "max 2: " << nids.max().item<long>() << endl;
-                    // cout << "max 2: " << nids.min().item<long>() << endl;
+            torch::Tensor nids;
+            if(q.wait_and_pop(nids)){
 
-                    // counts.index_put_({nids}, new_nids_counts);
-
-                    torch::Tensor hist = nids.bincount({}, counts.sizes()[0]);
-                    // cout << hist.sizes()[0] << endl;
-                    counts += hist;
-                    // std::cout << "new" << counts << std::endl;
-
+                auto counts_acc = counts.accessor<long, 1>();
+                auto nids_acc = nids.accessor<long, 1>();
+                int n = nids.sizes()[0];
+                for(int i = 0; i < n; i++){
+                    counts_acc[nids_acc[i]] += 1; 
                 }
-                q.pop();
-                requests_handled++;
-                cout << "handled: " << requests_handled << "\n";
-            }
 
-            if(decay_frequency != 0 && requests_handled % decay_frequency == 0){
-                counts.div_(2, "floor");
+                requests_handled++;
+                // cout << "handled: " << requests_handled << "\n";
+                if(decay_frequency != 0 && requests_handled % decay_frequency == 0){
+                    decay = true;
+                }                
+                if(update_frequency != 0 && requests_handled % update_frequency == 0) {
+                    update = true;
+                }
+            }
+            // while (!q.empty() && worker_alive) {
+            //     // q.consume_all<null_fn>();
+            //     // torch::Tensor nids = q.front();
+            //     // // Probably should go after the q.pop but now you can wait for
+            //     // // the sum to finish
+            //     // if(nids.sizes()[0] > 0){
+            //     //     ASSERT ((nids.max().item<long>() < counts.sizes()[0]), "Invalid node id received at manager " << nids.max());
+            //     //     ASSERT ((nids.min().item<long>() >= 0), "Invalid node id received at manager " << nids.min());
+            //     //     // std::cout << nids << std::endl;
+                    
+            //     //     // torch::Tensor nid_cur_counts = counts.index({nids});
+            //     //     // // TODO - assumes nids are unique, can use torch::bincount if not
+            //     //     // torch::Tensor new_nids_counts = nid_cur_counts + 1;
+
+            //     //     // std::cout << "nids dtype: " << nids.dtype() <<endl;
+            //     //     // std::cout << "new_nids_counts dtype: " << new_nids_counts.dtype() << endl;
+            //     //     // cout << "nids " << nids.sizes()[0] << " " << nids.device() << endl;
+            //     //     // cout << "new nid counts " << new_nids_counts.sizes()[0] << " " << new_nids_counts.device() << endl;
+            //     //     // cout << "counts " << counts.sizes()[0] << " " << counts.device() << endl;
+            //     //     // // cout << nids << endl;
+            //     //     // std::cout << "counts size: " << counts.sizes()[0] << endl;
+            //     //     // cout << "max 2: " << nids.max().item<long>() << endl;
+            //     //     // cout << "max 2: " << nids.min().item<long>() << endl;
+
+            //     //     // counts.index_put_({nids}, new_nids_counts);
+
+            //     //     // torch::Tensor hist = nids.bincount({}, counts.sizes()[0]);
+            //     //     // cout << hist.sizes()[0] << endl;
+            //     //     // counts += hist;
+            //     //     // std::cout << "new" << counts << std::endl;
+
+            //     // }
+            //     q.pop();
+            //     requests_handled++;
+            //     // cout << "handled: " << requests_handled << "\n";
+            //     if(decay_frequency != 0 && requests_handled % decay_frequency == 0){
+            //         decay = true;
+            //     }                
+            //     if(update_frequency != 0 && requests_handled % update_frequency == 0) {
+            //         update = true;
+            //     }
+            // }
+
+            if(decay){
+                // cout << "decaying counts" << endl;
+                // counts.div_(2, "floor");
+                auto counts_acc = counts.accessor<long, 1>();
+                int n = counts.sizes()[0];
+                for(int i = 0; i < n; i++){
+                    long c = counts_acc[i];
+                    if (c != 0){
+                        counts_acc[i] = c / 2;
+                    }
+                    
+                }
+                // cout << "counts: " << counts << endl;
             }
 
             // Cache update
-            if(update_frequency != 0 && requests_handled % update_frequency == 0) {
+            if(update) {
                 // cout << "starting stats" << endl;
                 // Compute cache statistic
                 torch::Tensor add_nids = getMostCommonNodesNotInCache(staging_area_size);
@@ -170,6 +277,11 @@ private:
 
                 add_nids = add_nids.index({Slice(None, i1)});
                 replace_nids = replace_nids.index({Slice(i2, None)});
+                cout << "replacement size: " << i1 << endl;
+                
+                auto current_worst_avg_count = counts.index({replace_nids}).mean(torch::kFloat32).item();
+                auto replace_avg_count = counts.index({add_nids}).mean(torch::kFloat32).item();
+                cout << "replacing " << current_worst_avg_count << " with " << replace_avg_count << endl;
 
                 ASSERT (add_nids.sizes()[0] == replace_nids.sizes()[0], "Internal error, add/replace mismatch " << add_nids.sizes()[0] << " " << replace_nids.sizes()[0] << endl);
 
@@ -205,6 +317,8 @@ public:
             std::cout << "entered destructor" << std::endl;
             // while(!q.empty()); // This waits for worker to finish processing
             worker_alive = false;
+            q.disable();
+
             std::cout << "bool set, calling join" << std::endl;
             worker_thread.join();
             std::cout << "exiting destructor" << std::endl;
@@ -235,13 +349,14 @@ public:
     void incrementCounts(torch::Tensor node_ids)
     {
         q.push(node_ids);
+        // q.enqueue(node_ids);
     }
 
     void waitForQueue()
     {
         gilRelease([this]{
-            while (!q.empty())
-                ;
+            // while (!q.empty())
+                // ;
             }
         );
     }
@@ -255,7 +370,7 @@ public:
     void threadExit()
     {
         finished_threads++;
-        cout << "finished: " << finished_threads << "\n";
+        // cout << "finished: " << finished_threads << "\n";
     }
 
     torch::Tensor getMostCommonNodesNotInCache(int k){
