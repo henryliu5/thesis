@@ -4,7 +4,7 @@ import time
 
 def test_cache_thread_counting():
     num_total_nodes = 100
-    cache_manager = fast_inference_cpp.CacheManager(num_total_nodes, 10, 0, 0)
+    cache_manager = fast_inference_cpp.CacheManager(num_total_nodes, 10, 10, 10)
 
     # TODO support non-unique neighborhoods if necessary
     neighborhood = 99
@@ -32,7 +32,10 @@ def test_cache_thread_counting():
 def test_cache_stats():
     num_total_nodes = 100
     feature_dim = 10
-    cache_manager = fast_inference_cpp.CacheManager(num_total_nodes, 10, 0, 0)
+    cache_size = 5
+    update_frequency = 10
+    staging_area_size = 2
+    cache_manager = fast_inference_cpp.CacheManager(num_total_nodes, cache_size, update_frequency, staging_area_size)
 
     graph_features = torch.randint(0, 1000, (num_total_nodes, feature_dim))
     cache_mask = torch.zeros(num_total_nodes, dtype=torch.bool)
@@ -43,7 +46,7 @@ def test_cache_stats():
 
     reverse_mapping = torch.arange(5)
 
-    cache = graph_features[0:5]
+    cache = graph_features[0:5].to('cuda')
 
     cache_manager.set_cache(graph_features, cache_mask, cache_mapping, reverse_mapping, cache)
 
@@ -64,8 +67,8 @@ def test_cache_stats():
     print('most_used_nids', most_used_nids)
 
     assert (torch.equal(least_used_idx.sort()[0], torch.tensor([2, 3, 4])))
-    assert (torch.equal(most_used_nids.sort()[0], torch.arange(5, 13)))
+    assert (torch.equal(most_used_nids.sort()[0], torch.arange(5, 8)))
 
 if __name__ == '__main__':
-    test_cache_thread_counting()
+    # test_cache_thread_counting()
     test_cache_stats()
