@@ -9,7 +9,11 @@
 #include <functional>
 #include <pthread.h>
 #include <queue>
-#include "concurrentqueue.hpp"
+#include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/CUDAGuard.h>
+// #include "concurrentqueue.hpp"
+#include <chrono>
+using namespace std::chrono;
 
 
 #ifndef NDEBUG
@@ -36,6 +40,7 @@ private:
     mutable boost::mutex the_mutex;
     boost::condition_variable the_condition_variable;
     bool alive = true;
+    int BOUND = 5;
 public:
     void disable(){
         alive = false;
@@ -45,6 +50,9 @@ public:
     void push(Data const& data)
     {
         boost::mutex::scoped_lock lock(the_mutex);
+        while(the_queue.size() >= BOUND){
+            the_queue.pop();
+        }
         the_queue.push(data);
         lock.unlock();
         the_condition_variable.notify_one();
@@ -121,12 +129,32 @@ private:
     torch::Tensor cpu_staging_area;
     torch::Tensor gpu_staging_area;
 
+    // Test variables
+    torch::Tensor big_graph_arange;
+    int requests_handled2;
+
     void stageNewFeatures(torch::Tensor nids)
     {
         // Feature gather
         // TODO figure out how to make this just go directly into the pinned mem buf
-        cpu_staging_area = graph_features.index({nids}).to(torch::device(torch::kCPU).pinned_memory(true));
-        gpu_staging_area = cpu_staging_area.to(torch::device(torch::kCUDA), true);
+        int n = nids.sizes()[0];
+        // cout << "cpu_staging_area size: " << cpu_staging_area.sizes() << endl;
+        // cout << "graph feat size: " << graph_features.sizes() << endl;
+        // cout << "nids size: " << nids.sizes() << endl;
+
+        cpu_staging_area.index_put_({Slice(0, n)}, graph_features.index({nids}));
+        // cpu_staging_area = graph_features.index({nids}).to(torch::device(torch::kCPU).pinned_memory(true));
+
+        // auto cpu_stage_acc = cpu_staging_area.accessor<float, 1>();
+        // auto graph_acc = graph_features.accessor<float, 1>();
+        // auto nids_acc = nids.accessor<long, 1>();
+        // int n = nids.sizes()[0];
+        // for(int i = 0; i < n; i++){
+        //     cpu_stage_acc[i] = graph_acc[nids_acc[i]];
+        // }
+
+        gpu_staging_area = cpu_staging_area.index({Slice(0, n)}).to(torch::device(torch::kCUDA), true);
+        // gpu_staging_area = cpu_staging_area.to(torch::device(torch::kCUDA), true);
     }
 
     /**
@@ -137,7 +165,11 @@ private:
     */
     void cacheUpdate(torch::Tensor new_nids, torch::Tensor replace_nids)
     {
+        auto start = high_resolution_clock::now();
         stageNewFeatures(new_nids);
+        auto stop = high_resolution_clock::now();
+        auto duration = duration_cast<microseconds>(stop - start);
+        cout << "staging time: " << duration.count() << endl;
         
         // TODO could do all of this in a callback, thus happening async from counting
         torch::Tensor replace_cache_idxs = cache_mapping.index({replace_nids});
@@ -168,6 +200,8 @@ private:
 
     void worker()
     {
+        at::cuda::CUDAStream myStream = at::cuda::getStreamFromPool(false, 0);
+        at::cuda::CUDAStreamGuard guard(myStream);
         pthread_setname_np(pthread_self(), "CacheManager worker");
         // Starts at 1 just to skip update
         int requests_handled = 1;
@@ -194,48 +228,80 @@ private:
                     update = true;
                 }
             }
-            // while (!q.empty() && worker_alive) {
-            //     // q.consume_all<null_fn>();
-            //     // torch::Tensor nids = q.front();
-            //     // // Probably should go after the q.pop but now you can wait for
-            //     // // the sum to finish
-            //     // if(nids.sizes()[0] > 0){
-            //     //     ASSERT ((nids.max().item<long>() < counts.sizes()[0]), "Invalid node id received at manager " << nids.max());
-            //     //     ASSERT ((nids.min().item<long>() >= 0), "Invalid node id received at manager " << nids.min());
-            //     //     // std::cout << nids << std::endl;
-                    
-            //     //     // torch::Tensor nid_cur_counts = counts.index({nids});
-            //     //     // // TODO - assumes nids are unique, can use torch::bincount if not
-            //     //     // torch::Tensor new_nids_counts = nid_cur_counts + 1;
+            
+            // Cache update
+            if(update) {
+                // cout << "starting stats" << endl;
+                // Compute cache statistic
 
-            //     //     // std::cout << "nids dtype: " << nids.dtype() <<endl;
-            //     //     // std::cout << "new_nids_counts dtype: " << new_nids_counts.dtype() << endl;
-            //     //     // cout << "nids " << nids.sizes()[0] << " " << nids.device() << endl;
-            //     //     // cout << "new nid counts " << new_nids_counts.sizes()[0] << " " << new_nids_counts.device() << endl;
-            //     //     // cout << "counts " << counts.sizes()[0] << " " << counts.device() << endl;
-            //     //     // // cout << nids << endl;
-            //     //     // std::cout << "counts size: " << counts.sizes()[0] << endl;
-            //     //     // cout << "max 2: " << nids.max().item<long>() << endl;
-            //     //     // cout << "max 2: " << nids.min().item<long>() << endl;
+                // auto [values, most_common_nids] = counts.topk(cache_size);
+                // auto most_common_mask = torch::zeros(counts.sizes()[0], torch::dtype(torch::kBool));
+                // most_common_mask.index_put_({most_common_nids}, true);
+                // auto new_candidate_mask = most_common_mask & ~cache_mask;
+                // auto replace_nids_mask = ~most_common_mask & cache_mask;
+                // torch::Tensor add_nids = big_graph_arange.index({new_candidate_mask});
+                // torch::Tensor replace_nids = big_graph_arange.index({replace_nids_mask});
 
-            //     //     // counts.index_put_({nids}, new_nids_counts);
+                torch::Tensor add_nids = getMostCommonNodesNotInCache(0).slice(0, 0, staging_area_size);
+                torch::Tensor replace_cache_idxs = getLeastUsedCacheIndices(add_nids.sizes()[0]);
+                
+                torch::Tensor replace_nids = reverse_mapping.index({replace_cache_idxs});
+                cout << counts.index({replace_nids.slice(0,0,10)}) << endl;
+                // torch::Tensor add_nids = getMostCommonNodesNotInCache(staging_area_size);
+                // torch::Tensor replace_cache_idxs = getLeastUsedCacheIndices(staging_area_size);
+                // torch::Tensor replace_nids = reverse_mapping.index({replace_cache_idxs});
 
-            //     //     // torch::Tensor hist = nids.bincount({}, counts.sizes()[0]);
-            //     //     // cout << hist.sizes()[0] << endl;
-            //     //     // counts += hist;
-            //     //     // std::cout << "new" << counts << std::endl;
+                // // Dumb way to figure out which to replace
+                // int n = staging_area_size;
+                // int i1 = 0;
+                // int i2 = 0;
+                // auto add_nids_acc = add_nids.accessor<long, 1>();
+                // auto replace_nids_acc = replace_nids.accessor<long, 1>();
+                // auto counts_acc = counts.accessor<long, 1>();
+                // while(i1 + i2 < n){
+                //     if(counts_acc[add_nids_acc[i1]] > counts_acc[replace_nids_acc[i2]]){
+                //         i1 += 1;
+                //     } else {
+                //         i2 += 1;
+                //     }
+                // }
 
-            //     // }
-            //     q.pop();
-            //     requests_handled++;
-            //     // cout << "handled: " << requests_handled << "\n";
-            //     if(decay_frequency != 0 && requests_handled % decay_frequency == 0){
-            //         decay = true;
-            //     }                
-            //     if(update_frequency != 0 && requests_handled % update_frequency == 0) {
-            //         update = true;
-            //     }
-            // }
+                // cout << "add nids 1 " << add_nids.sizes()[0] << endl;
+                // cout << "replace nids 1 " << replace_nids.sizes()[0] << endl;
+
+                // add_nids = add_nids.index({Slice(None, i1)});
+                // replace_nids = replace_nids.index({Slice(i2, None)});
+                // cout << "replacement size: " << i1 << endl;
+                
+                // auto current_worst_avg_count = counts.index({replace_nids}).mean(torch::kFloat32).item();
+                // auto replace_avg_count = counts.index({add_nids}).mean(torch::kFloat32).item();
+                // cout << "replacing " << current_worst_avg_count << " with " << replace_avg_count << endl;
+
+                add_nids = add_nids.slice(0, 0, staging_area_size);
+                replace_nids = replace_nids.slice(0, 0, staging_area_size);
+                ASSERT (add_nids.sizes()[0] == replace_nids.sizes()[0], "Internal error, add/replace mismatch " << add_nids.sizes()[0] << " " << replace_nids.sizes()[0] << endl);
+                cout << "add nids " << add_nids.sizes()[0] << endl;
+                // cout << "replace nids " << replace_nids.sizes()[0] << endl;
+                // Gather and move features to GPU
+                auto start = high_resolution_clock::now();
+                cacheUpdate(add_nids, replace_nids);
+                auto stop = high_resolution_clock::now();
+                auto duration = duration_cast<microseconds>(stop - start);
+                cout << "update time: " << duration.count() << endl;
+
+                // {
+                //     auto counts_acc = counts.accessor<long, 1>();
+                //     int n = counts.sizes()[0];
+                //     for(int i = 0; i < n; i++){
+                //         long c = counts_acc[i];
+                //         if (c != 0){
+                //             counts_acc[i] = 0;
+                //         }
+                        
+                //     }
+                // }
+
+            }
 
             if(decay){
                 // cout << "decaying counts" << endl;
@@ -250,43 +316,6 @@ private:
                     
                 }
                 // cout << "counts: " << counts << endl;
-            }
-
-            // Cache update
-            if(update) {
-                // cout << "starting stats" << endl;
-                // Compute cache statistic
-                torch::Tensor add_nids = getMostCommonNodesNotInCache(staging_area_size);
-                torch::Tensor replace_cache_idxs = getLeastUsedCacheIndices(staging_area_size);
-                torch::Tensor replace_nids = reverse_mapping.index({replace_cache_idxs});
-
-                // Dumb way to figure out which to replace
-                int n = staging_area_size;
-                int i1 = 0;
-                int i2 = 0;
-                auto add_nids_acc = add_nids.accessor<long, 1>();
-                auto replace_nids_acc = replace_nids.accessor<long, 1>();
-                auto counts_acc = counts.accessor<long, 1>();
-                while(i1 + i2 < n){
-                    if(counts_acc[add_nids_acc[i1]] > counts_acc[replace_nids_acc[i2]]){
-                        i1 += 1;
-                    } else {
-                        i2 += 1;
-                    }
-                }
-
-                add_nids = add_nids.index({Slice(None, i1)});
-                replace_nids = replace_nids.index({Slice(i2, None)});
-                cout << "replacement size: " << i1 << endl;
-                
-                auto current_worst_avg_count = counts.index({replace_nids}).mean(torch::kFloat32).item();
-                auto replace_avg_count = counts.index({add_nids}).mean(torch::kFloat32).item();
-                cout << "replacing " << current_worst_avg_count << " with " << replace_avg_count << endl;
-
-                ASSERT (add_nids.sizes()[0] == replace_nids.sizes()[0], "Internal error, add/replace mismatch " << add_nids.sizes()[0] << " " << replace_nids.sizes()[0] << endl);
-
-                // Gather and move features to GPU
-                cacheUpdate(add_nids, replace_nids);
             }
         }
         std::cout << "worker exited" << std::endl;
@@ -307,8 +336,7 @@ public:
     {
         ASSERT (staging_area_size <= cache_size, "staging_area_size must be smaller than the cache size, staging_area_size: " << staging_area_size << " cache_size: " << cache_size);
         counts = torch::zeros(num_total_nodes, torch::dtype(torch::kLong));
-        cpu_staging_area = torch::empty(staging_area_size, torch::device(torch::kCPU).pinned_memory(true));
-        gpu_staging_area = torch::empty(staging_area_size, torch::device(torch::kCUDA).requires_grad(false));
+        requests_handled2 = 0;
     }
 
     ~CacheManager()
@@ -334,6 +362,11 @@ public:
         this->cache_mapping = cache_mapping;
         this->reverse_mapping = reverse_mapping;
         this->cache = cache;
+
+        cpu_staging_area = torch::empty({staging_area_size, graph_features.sizes()[1]}, torch::device(torch::kCPU).pinned_memory(true).dtype(torch::kFloat32));
+        gpu_staging_area = torch::empty(staging_area_size, torch::device(torch::kCUDA).requires_grad(false).dtype(torch::kFloat32));
+
+        big_graph_arange = torch::arange(counts.sizes()[0]);
     }
 
     void setUpdateFrequency(int update_frequency)
@@ -348,8 +381,10 @@ public:
 
     void incrementCounts(torch::Tensor node_ids)
     {
-        q.push(node_ids);
-        // q.enqueue(node_ids);
+        bool DO_ASYNC = true;
+        if(DO_ASYNC){
+            q.push(node_ids);    
+        } else { }
     }
 
     void waitForQueue()
@@ -388,10 +423,26 @@ public:
         /**
          * Returns least used cache indices based on current counts.
         */
-       torch::Tensor counts_in_cache = counts.masked_select(cache_mask);
+       auto rand_nids_in_cache = big_graph_arange.masked_select(cache_mask).slice(0, 0, 5);
+
+    //    torch::Tensor counts_in_cache = torch::zeros(cache_size, torch::dtype(torch::kLong));
+    //    torch::Tensor scatter_idxs = cache_mapping.masked_select(cache_mask.cuda()).cpu();
+    //    torch::Tensor masked_counts = counts.masked_select(cache_mask);
+    //    counts_in_cache.scatter_(0, scatter_idxs, masked_counts);
+
+        torch::Tensor counts_in_cache = counts.index({reverse_mapping});
+
        ASSERT (k <= cache_size, "k must be smaller than the cache size, k: " << k << " cache_size: " << cache_size);
-       auto [values, indices] = counts_in_cache.topk(k, -1, false);
+       auto [values, indices] = counts_in_cache.topk(k, 0, false, true);
        return indices;
+    }
+
+    torch::Tensor getMostCommonNodes(int k){
+        /**
+         * Returns most common nids not in cache based on current counts.
+        */
+        auto [values, indices] = counts.topk(k);
+        return indices;
     }
 
     torch::Tensor getCounts()
