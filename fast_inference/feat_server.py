@@ -457,9 +457,9 @@ class ManagedCacheServer(FeatureServer):
 
 
     def start_manager(self):
-        update_frequency = 10
-        decay_frequency = 5
-        staging_area_size = self.cache_size // 20
+        update_frequency = 5
+        decay_frequency = 10
+        staging_area_size = self.cache_size // 10
         print('Staging area size:', staging_area_size)
         self.num_total_nodes = self.g.num_nodes()
         self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, update_frequency, decay_frequency, staging_area_size)
