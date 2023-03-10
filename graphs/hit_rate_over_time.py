@@ -36,35 +36,23 @@ def main(paths, policies, model_name, graph_name, batch_size, file_suffix = ''):
     plt.clf()
     
 if __name__ == '__main__':
-    main([
-        #   'benchmark/data/new_cache_gpu_bias_0.8',
-        #   'benchmark/data/new_cache_gpu_bias_0.8_count',
-        #   'benchmark/data/new_cache_gpu_bias_0.8_LFU',
-        #   'benchmark/data/new_cache_gpu_bias_0.8_hybrid',
-        #   'benchmark/data/new_cache_gpu',
-        #   'benchmark/data/new_cache_gpu_count',
-        #   'benchmark/data/new_cache_gpu_LFU',
-        #   'benchmark/data/new_cache_gpu_hybrid',
-
-          'benchmark/fast_data/new_cache_gpu_static',
-          'benchmark/fast_data/new_cache_gpu_count',
-        #   'benchmark/fast_data/new_cache_gpu_lfu',
-          'benchmark/fast_data/new_cache_gpu_async',
-          'fast_sampling/gpu/pinned/uniform/cpp_0.2', 
-        #   'benchmark/fast_data/new_cache_gpu_bias_0.8_static',
-        #   'benchmark/fast_data/new_cache_gpu_bias_0.8_count',
-        #   'benchmark/fast_data/new_cache_gpu_bias_0.8_lfu',
-        #   'benchmark/fast_data/new_cache_gpu_bias_0.8_async', 
-          ],
-           ['Static (Degree)', 'Counting', 'Async', 'CPP']
-           , 'GCN', 'ogbn-products', 256)
-
-    main([
-          'benchmark/fast_data/new_cache_gpu_bias_0.8_static',
-          'benchmark/fast_data/new_cache_gpu_bias_0.8_count',
-          'benchmark/fast_data/new_cache_gpu_bias_0.8_lfu',
-          'benchmark/fast_data/new_cache_gpu_bias_0.8_async', 
-          'fast_sampling/gpu/pinned/bias_0.8/cpp_0.2', 
-          ],
-           ['Static (Degree)', 'Counting', 'LFU', 'Async', 'CPP']
-           , 'GCN', 'ogbn-products', 256, f'_biased')
+    cache_ratios = [0.1, 0.2]
+    for c in cache_ratios:
+        main([
+            f'fast_sampling/gpu/pinned/uniform/static_{c}',
+            f'fast_sampling/gpu/pinned/uniform/count_{c}',
+            f'fast_sampling/gpu/pinned/uniform/cpp_{c}', 
+            ],
+            ['Static (Degree)', 'Counting', 'CPP']
+            , 'GCN', 'ogbn-products', 256, f'c{c}')
+        main([
+            # 'benchmark/fast_data/new_cache_gpu_bias_0.8_static',
+            # 'benchmark/fast_data/new_cache_gpu_bias_0.8_count',
+            # 'benchmark/fast_data/new_cache_gpu_bias_0.8_lfu',
+            # 'benchmark/fast_data/new_cache_gpu_bias_0.8_async', 
+            f'fast_sampling/gpu/pinned/bias_0.8/static_{c}',
+            f'fast_sampling/gpu/pinned/bias_0.8/count_{c}',
+            f'fast_sampling/gpu/pinned/bias_0.8/cpp_{c}', 
+            ],
+            ['Static (Degree)', 'Counting', 'CPP']
+            , 'GCN', 'ogbn-products', 256, f'_biased_c{c}')

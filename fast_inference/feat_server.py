@@ -457,7 +457,7 @@ class ManagedCacheServer(FeatureServer):
         self.staging_area_prop = 0.05
 
     def start_manager(self, staging_area_size):
-        update_frequency = 8
+        update_frequency = 15
         decay_frequency = 10
         print('Staging area size:', staging_area_size)
         self.num_total_nodes = self.g.num_nodes()
@@ -550,10 +550,12 @@ class ManagedCacheServer(FeatureServer):
 
                 with Timer('CPU-GPU copy', track_cuda=True):
                     # Copy CPU features
-                    res_tensor[cpu_mask] = required_cpu_features.to(
+                    new_cpu_feats = required_cpu_features.to(
                         self.device, non_blocking=True)
                     # Copy MFGs
                     mfgs = [mfg.to(self.device) for mfg in mfgs]
+                    
+                    res_tensor[cpu_mask] = new_cpu_feats
 
                 with Timer('move cached features', track_cuda=True):
                     # Features from GPU mem

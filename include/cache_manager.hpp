@@ -95,6 +95,36 @@ public:
 
 };
 
+class TensorHolder {
+    /** A place to put and get a single Tensor (or pair of Tensors)*/
+
+    std::atomic<bool> empty;
+    torch::Tensor new_gpu_features;
+    torch::Tensor new_nids;
+    int max_size;
+
+public:
+    TensorHolder(int max_size) : max_size(max_size) {}
+
+    bool tryGet(torch::Tensor& feats, torch::Tensor& nids){
+        if(empty){
+            return false;
+        }
+        feats = new_gpu_features;
+        nids = new_nids;
+        empty.store(true);
+        return true;
+    }
+
+    void setFeats(torch::Tensor feats, torch::Tensor nids){
+        if(empty){
+            new_gpu_features = feats.slice(0, 0, max_size);
+            new_nids = nids.slice(0, 0, max_size);
+            empty.store(false);
+        }
+    }
+};
+
 class CacheManager {
     /** Controls cache state.
      *  Computes cache usage statistics and performs dynamic cache updates.
@@ -132,6 +162,7 @@ private:
     // Test variables
     torch::Tensor big_graph_arange;
     int requests_handled2;
+    TensorHolder gpu_feat_holder;
 
     void stageNewFeatures(torch::Tensor nids)
     {
@@ -188,10 +219,37 @@ private:
         cache_mapping.index_put_({ new_nids }, replace_cache_idxs);
 
         // 3b. Actually update the cache
-        // cout << "replace_cache_idxs " << replace_cache_idxs.sizes()[0] << endl;
-        // cout << "gpu_staging_area " << gpu_staging_area.sizes()[0] << endl;
-        // cout << "cache dev: " << cache.device() << endl;
-        // cout << "gpu staging area dev: " << gpu_staging_area.device() << endl;
+        cache.index_put_({ replace_cache_idxs }, gpu_staging_area);
+
+        // 4. Unmask, but now with new nodes!
+        cache_mask.index_put_({ new_nids }, true);
+    }
+
+    void cacheUpdateFromHolder(torch::Tensor new_nids, torch::Tensor replace_nids)
+    {
+        // auto start = high_resolution_clock::now();
+        stageNewFeatures(new_nids);
+        // auto stop = high_resolution_clock::now();
+        // auto duration = duration_cast<microseconds>(stop - start);
+        // cout << "staging time: " << duration.count() << endl;
+        
+        // TODO could do all of this in a callback, thus happening async from counting
+        torch::Tensor replace_cache_idxs = cache_mapping.index({replace_nids});
+        // 1. Mask off cache
+        cache_mask.index_put_({ replace_nids }, false);
+
+        // 2. Wait for enough threads to finish
+        long fetchers_at_start = started_threads.load();
+        //!! Need to make sure worker is alive in this loop!
+        while (finished_threads.load() < fetchers_at_start && worker_alive)
+            ;
+
+        // 3a. Perform remappings
+        cache_mapping.index_put_({ replace_nids }, -1);
+        reverse_mapping.index_put_({ replace_cache_idxs }, new_nids);
+        cache_mapping.index_put_({ new_nids }, replace_cache_idxs);
+
+        // 3b. Actually update the cache
         cache.index_put_({ replace_cache_idxs }, gpu_staging_area);
 
         // 4. Unmask, but now with new nodes!
@@ -200,6 +258,7 @@ private:
 
     void worker()
     {
+        c10::InferenceMode infer_guard;
         at::cuda::CUDAStream myStream = at::cuda::getStreamFromPool(false, 0);
         at::cuda::CUDAStreamGuard guard(myStream);
         pthread_setname_np(pthread_self(), "CacheManager worker");
@@ -242,14 +301,23 @@ private:
                 // torch::Tensor add_nids = big_graph_arange.index({new_candidate_mask});
                 // torch::Tensor replace_nids = big_graph_arange.index({replace_nids_mask});
 
-                torch::Tensor add_nids = getMostCommonNodesNotInCache(0).slice(0, 0, staging_area_size);
+                auto start = high_resolution_clock::now();
+                torch::Tensor add_nids = getMostCommonNodesNotInCache(0);
+                auto stop = high_resolution_clock::now();
+                auto duration = duration_cast<microseconds>(stop - start);
+                cout << "compute topk time: " << duration.count() << endl;
+                add_nids = add_nids.slice(0, 0, staging_area_size);
+
+                auto start2 = high_resolution_clock::now();
                 torch::Tensor replace_cache_idxs = getLeastUsedCacheIndices(add_nids.sizes()[0]);
-                
                 torch::Tensor replace_nids = reverse_mapping.index({replace_cache_idxs});
-                // cout << counts.index({replace_nids.slice(0,0,10)}) << endl;
-                // torch::Tensor add_nids = getMostCommonNodesNotInCache(staging_area_size);
-                // torch::Tensor replace_cache_idxs = getLeastUsedCacheIndices(staging_area_size);
-                // torch::Tensor replace_nids = reverse_mapping.index({replace_cache_idxs});
+                auto stop2 = high_resolution_clock::now();
+                auto duration2 = duration_cast<microseconds>(stop2 - start2);
+                cout << "compute replace time: " << duration2.count() << endl;
+                // // cout << counts.index({replace_nids.slice(0,0,10)}) << endl;
+                // // torch::Tensor add_nids = getMostCommonNodesNotInCache(staging_area_size);
+                // // torch::Tensor replace_cache_idxs = getLeastUsedCacheIndices(staging_area_size);
+                // // torch::Tensor replace_nids = reverse_mapping.index({replace_cache_idxs});
                 add_nids = add_nids.slice(0, 0, staging_area_size);
                 replace_nids = replace_nids.slice(0, 0, staging_area_size);
 
@@ -294,6 +362,7 @@ public:
         , staging_area_size(staging_area_size)
         , started_threads(0)
         , finished_threads(0)
+        , gpu_feat_holder(staging_area_size)
     {
         ASSERT (staging_area_size <= cache_size, "staging_area_size must be smaller than the cache size, staging_area_size: " << staging_area_size << " cache_size: " << cache_size);
         counts = torch::zeros(num_total_nodes, torch::dtype(torch::kLong));
@@ -384,12 +453,6 @@ public:
         /**
          * Returns least used cache indices based on current counts.
         */
-       auto rand_nids_in_cache = big_graph_arange.masked_select(cache_mask).slice(0, 0, 5);
-
-    //    torch::Tensor counts_in_cache = torch::zeros(cache_size, torch::dtype(torch::kLong));
-    //    torch::Tensor scatter_idxs = cache_mapping.masked_select(cache_mask.cuda()).cpu();
-    //    torch::Tensor masked_counts = counts.masked_select(cache_mask);
-    //    counts_in_cache.scatter_(0, scatter_idxs, masked_counts);
 
         torch::Tensor counts_in_cache = counts.index({reverse_mapping});
 
@@ -409,6 +472,10 @@ public:
     torch::Tensor getCounts()
     {
         return counts;
+    }
+
+    void receiveNewFeatures(torch::Tensor feats, torch::Tensor nids){
+        gpu_feat_holder.setFeats(feats, nids);
     }
 
     void gilRelease(std::function<void()> f);
