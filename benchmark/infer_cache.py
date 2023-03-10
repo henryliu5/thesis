@@ -49,7 +49,7 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
     if feat_server:
         # Let's use top 20% of node features for static cache
         out_deg = g.out_degrees()
-        _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=False)
+        _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=True)
         del out_deg
         feat_server.set_static_cache(indices, ['feat'])
         k = 2000

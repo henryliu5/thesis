@@ -165,11 +165,11 @@ private:
     */
     void cacheUpdate(torch::Tensor new_nids, torch::Tensor replace_nids)
     {
-        auto start = high_resolution_clock::now();
+        // auto start = high_resolution_clock::now();
         stageNewFeatures(new_nids);
-        auto stop = high_resolution_clock::now();
-        auto duration = duration_cast<microseconds>(stop - start);
-        cout << "staging time: " << duration.count() << endl;
+        // auto stop = high_resolution_clock::now();
+        // auto duration = duration_cast<microseconds>(stop - start);
+        // cout << "staging time: " << duration.count() << endl;
         
         // TODO could do all of this in a callback, thus happening async from counting
         torch::Tensor replace_cache_idxs = cache_mapping.index({replace_nids});
@@ -246,60 +246,21 @@ private:
                 torch::Tensor replace_cache_idxs = getLeastUsedCacheIndices(add_nids.sizes()[0]);
                 
                 torch::Tensor replace_nids = reverse_mapping.index({replace_cache_idxs});
-                cout << counts.index({replace_nids.slice(0,0,10)}) << endl;
+                // cout << counts.index({replace_nids.slice(0,0,10)}) << endl;
                 // torch::Tensor add_nids = getMostCommonNodesNotInCache(staging_area_size);
                 // torch::Tensor replace_cache_idxs = getLeastUsedCacheIndices(staging_area_size);
                 // torch::Tensor replace_nids = reverse_mapping.index({replace_cache_idxs});
-
-                // // Dumb way to figure out which to replace
-                // int n = staging_area_size;
-                // int i1 = 0;
-                // int i2 = 0;
-                // auto add_nids_acc = add_nids.accessor<long, 1>();
-                // auto replace_nids_acc = replace_nids.accessor<long, 1>();
-                // auto counts_acc = counts.accessor<long, 1>();
-                // while(i1 + i2 < n){
-                //     if(counts_acc[add_nids_acc[i1]] > counts_acc[replace_nids_acc[i2]]){
-                //         i1 += 1;
-                //     } else {
-                //         i2 += 1;
-                //     }
-                // }
-
-                // cout << "add nids 1 " << add_nids.sizes()[0] << endl;
-                // cout << "replace nids 1 " << replace_nids.sizes()[0] << endl;
-
-                // add_nids = add_nids.index({Slice(None, i1)});
-                // replace_nids = replace_nids.index({Slice(i2, None)});
-                // cout << "replacement size: " << i1 << endl;
-                
-                // auto current_worst_avg_count = counts.index({replace_nids}).mean(torch::kFloat32).item();
-                // auto replace_avg_count = counts.index({add_nids}).mean(torch::kFloat32).item();
-                // cout << "replacing " << current_worst_avg_count << " with " << replace_avg_count << endl;
-
                 add_nids = add_nids.slice(0, 0, staging_area_size);
                 replace_nids = replace_nids.slice(0, 0, staging_area_size);
-                ASSERT (add_nids.sizes()[0] == replace_nids.sizes()[0], "Internal error, add/replace mismatch " << add_nids.sizes()[0] << " " << replace_nids.sizes()[0] << endl);
-                cout << "add nids " << add_nids.sizes()[0] << endl;
-                // cout << "replace nids " << replace_nids.sizes()[0] << endl;
-                // Gather and move features to GPU
-                auto start = high_resolution_clock::now();
-                cacheUpdate(add_nids, replace_nids);
-                auto stop = high_resolution_clock::now();
-                auto duration = duration_cast<microseconds>(stop - start);
-                cout << "update time: " << duration.count() << endl;
 
-                // {
-                //     auto counts_acc = counts.accessor<long, 1>();
-                //     int n = counts.sizes()[0];
-                //     for(int i = 0; i < n; i++){
-                //         long c = counts_acc[i];
-                //         if (c != 0){
-                //             counts_acc[i] = 0;
-                //         }
-                        
-                //     }
-                // }
+                ASSERT (add_nids.sizes()[0] == replace_nids.sizes()[0], "Internal error, add/replace mismatch " << add_nids.sizes()[0] << " " << replace_nids.sizes()[0] << endl);
+
+                // Gather and move features to GPU
+                // auto start = high_resolution_clock::now();
+                cacheUpdate(add_nids, replace_nids);
+                // auto stop = high_resolution_clock::now();
+                // auto duration = duration_cast<microseconds>(stop - start);
+                // cout << "update time: " << duration.count() << endl;
 
             }
 

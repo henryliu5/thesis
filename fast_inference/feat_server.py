@@ -454,12 +454,11 @@ class ManagedCacheServer(FeatureServer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.staging_area_prop = 0.05
 
-
-    def start_manager(self):
-        update_frequency = 5
+    def start_manager(self, staging_area_size):
+        update_frequency = 8
         decay_frequency = 10
-        staging_area_size = self.cache_size // 10
         print('Staging area size:', staging_area_size)
         self.num_total_nodes = self.g.num_nodes()
         self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, update_frequency, decay_frequency, staging_area_size)
@@ -472,6 +471,9 @@ class ManagedCacheServer(FeatureServer):
             node_ids (torch.Tensor): Elements should be node ids whose features are to be cached in GPU memory.
             feats (List[str]): List of strings corresponding to feature keys that should be cached.
         """
+        
+        staging_area_size = int(node_ids.shape[0] * self.staging_area_prop)
+        node_ids = node_ids[:node_ids.shape[0] - staging_area_size]
         self.cache_size = node_ids.shape[0]
         # Reset all
         self.nid_is_on_gpu[:] = False
@@ -483,7 +485,7 @@ class ManagedCacheServer(FeatureServer):
         for feat in feats:
             self.cache[feat] = self.g.ndata[feat][node_ids].to(self.device)
         
-            self.start_manager()
+            self.start_manager(staging_area_size)
             self.cache_manager.set_cache(self.g.ndata[feat], self.nid_is_on_gpu, 
                                         self.cache_mapping, self.reverse_mapping, self.cache[feat])
             # TODO support more than 1 featuer type
