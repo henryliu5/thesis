@@ -7,5 +7,8 @@ do
   sudo echo performance > $i
 done
 
+# Disable SMT
+echo off | sudo tee /sys/devices/system/cpu/smt/control
+
 # Disable ASLR
 echo 0 | sudo tee /proc/sys/kernel/randomize_va_space
