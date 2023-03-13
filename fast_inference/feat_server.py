@@ -138,38 +138,52 @@ class FeatureServer:
         pass
 
 class CountingFeatServer(FeatureServer):
-
     def init_counts(self, num_total_nodes):
         self.num_total_nodes = num_total_nodes
-        self.counts = torch.zeros(num_total_nodes)
+        self.counts = torch.zeros(num_total_nodes, pin_memory=True)
+
+        self.topk_stream = torch.cuda.Stream(device='cuda')
+        self.update_stream = torch.cuda.Stream(device='cuda')
+
+        self.most_common_nids = None
+        self.topk_started = False
+
+    def compute_topk(self):
+        with torch.cuda.stream(self.topk_stream):
+            _, self.most_common_nids = torch.topk(self.counts.to(self.device, non_blocking=True), self.cache_size, sorted=False)
+            self.topk_started = True
 
     def update_cache(self, feats):
-        # Resets cache mask (nothing stored anymore)
-        _, most_common_nids = torch.topk(self.counts, self.cache_size, sorted=False)
-        # # Updates to most common in based on self.counts
-        # self.set_static_cache(most_common_nids, ['feat'])
+        with torch.cuda.stream(self.update_stream):
+            # Resets cache mask (nothing stored anymore)
+            if not self.topk_started:
+                _, most_common_nids = torch.topk(self.counts.to(self.device), self.cache_size, sorted=False)
+            else:
+                torch.cuda.current_stream().wait_stream(self.topk_stream)
+                most_common_nids = self.most_common_nids
 
-        most_common_mask = torch.zeros(self.g.num_nodes(), dtype=torch.bool)
-        most_common_mask[most_common_nids] = True
-        # Mask for node ids that need features to be transferred
-        # (new entrants to cache)
-        requires_update_mask = torch.logical_and(most_common_mask, torch.logical_not(self.nid_is_on_gpu))
+            cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
+            most_common_mask = torch.zeros(self.num_total_nodes, dtype=torch.bool, device='cuda')
+            most_common_mask[most_common_nids] = True
 
-        # Indices of who can be replaced in the cache
-        replace_nids_mask = torch.logical_and(~most_common_mask, self.nid_is_on_gpu)
-        requires_update_cache_idx = self.cache_mapping[replace_nids_mask]
+            # Mask for node ids that need features to be transferred
+            # (new entrants to cache)            
+            requires_update_mask = torch.logical_and(most_common_mask, torch.logical_not(cache_mask_device))
 
-        for feat in feats:
-            old_shape = self.cache[feat].shape
-            self.cache[feat][requires_update_cache_idx] = self.g.ndata[feat][requires_update_mask].to(self.device)
-            assert(self.cache[feat].shape == old_shape)
+            # Indices of who can be replaced in the cache
+            replace_nids_mask = torch.logical_and(~most_common_mask, cache_mask_device)
+            requires_update_cache_idx = self.cache_mapping[replace_nids_mask]
 
-        self.nid_is_on_gpu[most_common_mask] = True
-        self.cache_mapping[requires_update_mask] = requires_update_cache_idx
-        self.nid_is_on_gpu[~most_common_mask] = False
-        self.cache_mapping[~most_common_mask] = -1
-        # self.counts *= 0
-        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+            for feat in feats:
+                old_shape = self.cache[feat].shape
+                self.cache[feat][requires_update_cache_idx] = self.g.ndata[feat][requires_update_mask.cpu()].to(self.device)
+                assert(self.cache[feat].shape == old_shape)
+
+            self.cache_mapping[requires_update_mask] = requires_update_cache_idx
+            #!! Need this weird copy_ to perform device to host non blocking transfer (and into pinned memory buffer)
+            self.nid_is_on_gpu.copy_(most_common_mask, non_blocking=True)
+            self.cache_mapping[~most_common_mask] = -1
+            torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
         """Get features for a list of nodes.
@@ -589,55 +603,21 @@ class ManagedCacheServer(FeatureServer):
         self.most_common_nids = None
         self.topk_started = False
 
+        self.big_graph_arange = torch.arange(num_total_nodes, device=self.device)
+
     def compute_topk(self):
         with torch.cuda.stream(self.topk_stream):
+            self.is_cache_candidate = torch.zeros(self.num_total_nodes, dtype=torch.bool, device=self.device)
             _, self.most_common_nids = torch.topk(self.counts.to(self.device, non_blocking=True), self.cache_size, sorted=False)
+
             self.topk_started = True
+            
             # most_common_nids = most_common_nids.cpu()
             # most_common_mask = torch.zeros(self.g.num_nodes(), dtype=torch.bool)
             # most_common_mask[most_common_nids] = True
 
     def update_cache(self, feats):
-        with torch.cuda.stream(self.update_stream):
-            # Resets cache mask (nothing stored anymore)
-            if not self.topk_started:
-                _, most_common_nids = torch.topk(self.counts.to(self.device), self.cache_size, sorted=False)
-            else:
-                torch.cuda.current_stream().wait_stream(self.topk_stream)
-                most_common_nids = self.most_common_nids
-            # most_common_nids = most_common_nids.cpu()
-            # _, most_common_nids = torch.topk(self.counts, self.cache_size, sorted=False)
-
-            
-            cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
-            most_common_mask = torch.zeros(self.num_total_nodes, dtype=torch.bool, device='cuda')
-            most_common_mask[most_common_nids] = True
-
-            # Mask for node ids that need features to be transferred
-            # (new entrants to cache)
-            
-            requires_update_mask = torch.logical_and(most_common_mask, torch.logical_not(cache_mask_device))
-
-            # Indices of who can be replaced in the cache
-            replace_nids_mask = torch.logical_and(~most_common_mask, cache_mask_device)
-            requires_update_cache_idx = self.cache_mapping[replace_nids_mask]
-
-            for feat in feats:
-                old_shape = self.cache[feat].shape
-                self.cache[feat][requires_update_cache_idx] = self.g.ndata[feat][requires_update_mask.cpu()].to(self.device)
-                assert(self.cache[feat].shape == old_shape)
-
-            # with Timer('set true'):
-            #     self.nid_is_on_gpu[most_common_mask] = True
-            self.cache_mapping[requires_update_mask] = requires_update_cache_idx
-            # with Timer('set false'):
-            #     self.nid_is_on_gpu[~most_common_mask] = False
-
-            #!! Need this weird copy_ to perform device to host non blocking transfer (and into pinned memory buffer)
-            self.nid_is_on_gpu.copy_(most_common_mask, non_blocking=True)
-            self.cache_mapping[~most_common_mask] = -1
-            # self.counts *= 0
-            torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
         """Get features for a list of nodes.
@@ -648,7 +628,110 @@ class ManagedCacheServer(FeatureServer):
             node_ids (torch.Tensor): A 1-D tensor of node IDs.
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
+        gpu_nids = node_ids
         node_ids = node_ids.cpu()
         with Timer('update counts'):
             self.counts[node_ids] += 1
-        return super().get_features(node_ids, feats, mfgs)
+
+        if mfgs is None:
+            mfgs = []
+
+        with Timer('get_features()'):
+            res = {}
+
+            # Used to mask this particular request - not to mask the cache!!
+            with Timer('compute gpu/cpu mask'):
+                gpu_mask = self.nid_is_on_gpu[node_ids]
+                cpu_mask = ~gpu_mask
+
+            if self.profile:
+                self.profile_info['request_size'].append(node_ids.shape[0])
+                cache_hits = gpu_mask.int().sum().item()
+                self.profile_info['cache_hits'].append(cache_hits)
+                self.profile_info['hit_rate'].append(cache_hits / node_ids.shape[0])
+
+            for feat in feats:
+                feat_shape = list(self.g.ndata[feat].shape[1:])
+                with Timer('allocate res tensor', track_cuda = True):
+                    # Create tensor with shape [number of nodes] x feature shape to hold result
+                    res_tensor = torch.zeros(
+                        tuple([node_ids.shape[0]] + feat_shape), device=self.device)
+
+                # Start copy to GPU mem
+                with Timer('mask cpu feats'):
+                    m = node_ids[cpu_mask]
+                    # TODO add parameter to control "use_pinned_mem"
+                    # Perform resizing if necessary
+                    if self.use_pinned_mem:
+                        if m.shape[0] > self.pinned_buf_dict[feat].shape[0]:
+                            self.pinned_buf_dict[feat] = self.pinned_buf_dict[feat].resize_((m.shape[0], self.pinned_buf_dict[feat].shape[1]))
+                        required_cpu_features = self.pinned_buf_dict[feat].narrow(0, 0, m.shape[0])
+
+                with Timer('feature gather'):
+                    if self.use_pinned_mem:
+                        # Places indices directly into pinned memory buffer
+                        torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
+                    else:
+                        #"slow mode"
+                        required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
+
+                with Timer('CPU-GPU copy', track_cuda=True):
+                    # Copy CPU features
+                    res_tensor[cpu_mask] = required_cpu_features.to(
+                        self.device, non_blocking=True)
+                    # Copy MFGs
+                    mfgs = [mfg.to(self.device) for mfg in mfgs]
+
+                with Timer('move cached features', track_cuda=True):
+                    # Features from GPU mem
+                    # self.cache_mapping maps the global node id to the respective index in the cache
+                    if feat in self.cache: # hacky drop in for torch.any(gpu_mask)
+                        mapping = self.cache_mapping[node_ids[gpu_mask]]
+                        assert(torch.all(mapping >= 0))
+                        required_gpu_features = self.cache[feat][mapping]
+                        res_tensor[gpu_mask] = required_gpu_features
+                
+                res[feat] = res_tensor
+
+                with Timer('cache update'):
+                    if self.topk_started:
+                        torch.cuda.current_stream().wait_stream(self.topk_stream)
+                        with torch.cuda.stream(self.update_stream):
+                            #!! This first line is kinda weird but goes here to allow
+                            #!! self.most_common_nids to be computed async in self.topk_stream
+                            self.is_cache_candidate[self.most_common_nids] = True
+                            cache_size = self.cache[feat].shape[0]
+
+                            cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
+
+                            # with Timer('nid to add mask'):
+                            cpu_mask = cpu_mask.to('cuda') 
+                            nids_to_add_mask = cpu_mask & self.is_cache_candidate[gpu_nids]
+                            nids_to_add = gpu_nids[nids_to_add_mask]
+
+                            # with Timer('replace nid mask'):
+                            # nids that are in cache and can be replaced in this epoch
+                            replace_nid_mask = cache_mask_device & ~self.is_cache_candidate
+
+                            replace_nids = self.big_graph_arange[replace_nid_mask]
+
+                            # with Timer('truncate'):
+                            num_to_add = min(replace_nids.shape[0], nids_to_add.shape[0], cache_size)
+                            replace_nids = replace_nids[:num_to_add]
+                            nids_to_add = nids_to_add[:num_to_add]
+
+                            # with Timer('meta update'):
+                            cache_mask_device[replace_nids] = False
+                            cache_mask_device[nids_to_add] = True
+                            self.nid_is_on_gpu.copy_(cache_mask_device, non_blocking=True)
+                            cache_slots = self.cache_mapping[replace_nids]
+                            self.cache_mapping[replace_nids] = -1
+                            self.cache_mapping[nids_to_add] = cache_slots
+
+                            old_shape = self.cache[feat].shape
+                            # with Timer('actual move'):
+                            # Recall the above truncation - the features we want will be at the front of the result tensor
+                            self.cache[feat][cache_slots] = res[feat][cpu_mask][:num_to_add]
+                            assert(self.cache[feat].shape == old_shape)
+
+        return res, mfgs
