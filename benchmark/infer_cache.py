@@ -125,7 +125,12 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
                     
 
                 with Timer(name='model', track_cuda=True):
-                    x = model(mfgs, inputs)
+                    with Timer('random topk'):
+                        if cache_type == 'cpp':
+                            feat_server.compute_topk()
+                    with Timer('actual forward'):
+                        x = model(mfgs, inputs)
+
                     # Force sync
                     x.cpu()
 
