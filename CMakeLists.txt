@@ -6,6 +6,7 @@ find_package(Torch REQUIRED)
 find_package(Boost COMPONENTS thread system REQUIRED)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+set(CMAKE_SHARED_LINKER_FLAGS "-Wl,--no-undefined")
 
 include_directories(include ${Boost_INCLUDE_DIR})
 

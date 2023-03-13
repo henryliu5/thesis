@@ -455,13 +455,14 @@ class ManagedCacheServer(FeatureServer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.staging_area_prop = 0.05
+        self.use_gpu_transfer = True
 
     def start_manager(self, staging_area_size):
         update_frequency = 15
         decay_frequency = 10
         print('Staging area size:', staging_area_size)
         self.num_total_nodes = self.g.num_nodes()
-        self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, update_frequency, decay_frequency, staging_area_size)
+        self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, update_frequency, decay_frequency, staging_area_size, self.use_gpu_transfer)
         self.counts = torch.zeros(self.num_total_nodes)
 
     def set_static_cache(self, node_ids: torch.Tensor, feats: List[str]):
@@ -570,5 +571,8 @@ class ManagedCacheServer(FeatureServer):
 
                 with Timer('cache manager atomic end'):
                     self.cache_manager.thread_exit()
+
+                if self.use_gpu_transfer:
+                    self.cache_manager.receive_new_features(new_cpu_feats, m)
 
         return res, mfgs

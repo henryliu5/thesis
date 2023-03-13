@@ -17,7 +17,7 @@ PYBIND11_MODULE(fast_inference_cpp, m)
     m.doc() = "pybind11 example plugin"; // optional module docstring
 
     py::class_<CacheManager>(m, "CacheManager")
-        .def(py::init<const int, const int, const int, const int, const int>())
+        .def(py::init<const int, const int, const int, const int, const int, bool>())
         .def("set_cache", &CacheManager::setCache)
         .def("incr_counts", &CacheManager::incrementCounts)
         .def("set_update_frequency", &CacheManager::setUpdateFrequency)
