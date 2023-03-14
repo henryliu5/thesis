@@ -651,8 +651,15 @@ class ManagedCacheServer(FeatureServer):
             self.topk_processed = False
 
     def update_cache(self, feats):
-        with torch.cuda.stream(self.update_stream):
-            torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+        # TODO figure out why this doesn't work when put by placing features in the queue
+        if not self.topk_processed:
+            torch.cuda.current_stream().wait_stream(self.topk_stream)
+            #!! This first line is kinda weird but goes here to allow
+            #!! self.most_common_nids to be computed async in self.topk_stream
+            self.is_cache_candidate[self.most_common_nids] = True
+            self.topk_processed = True
+
+        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
         """Get features for a list of nodes.
@@ -732,16 +739,16 @@ class ManagedCacheServer(FeatureServer):
 
                 with Timer('cache update'):
                     if self.topk_started:
-                        if not self.topk_processed:
-                            torch.cuda.current_stream().wait_stream(self.topk_stream)
-                            with torch.cuda.stream(self.update_stream):
-                                #!! This first line is kinda weird but goes here to allow
-                                #!! self.most_common_nids to be computed async in self.topk_stream
-                                self.is_cache_candidate[self.most_common_nids] = True
-                            self.topk_processed = True
+                        # if not self.topk_processed:
+                        #     torch.cuda.current_stream().wait_stream(self.topk_stream)
+                        #     with torch.cuda.stream(self.update_stream):
+                        #         #!! This first line is kinda weird but goes here to allow
+                        #         #!! self.most_common_nids to be computed async in self.topk_stream
+                        #         self.is_cache_candidate[self.most_common_nids] = True
+                        #     self.topk_processed = True
 
                         # with Timer('place in queue'):
-                            self.cache_manager.place_feats_in_queue(cpu_feats, gpu_nids[cpu_mask_devCUDA])
+                        self.cache_manager.place_feats_in_queue(cpu_feats, gpu_nids[cpu_mask_devCUDA])
                             # cache_size = self.cache[feat].shape[0]
 
                             # cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
