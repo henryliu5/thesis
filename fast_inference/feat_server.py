@@ -605,16 +605,42 @@ class ManagedCacheServer(FeatureServer):
 
         self.big_graph_arange = torch.arange(num_total_nodes, device=self.device)
 
+
+    def start_manager(self):
+        self.num_total_nodes = self.g.num_nodes()
+        self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, -1, -1, 0, True)
+
+
+    def set_static_cache(self, node_ids: torch.Tensor, feats: List[str]):
+        """Define a static cache using the given node ids.
+
+        Args:
+            node_ids (torch.Tensor): Elements should be node ids whose features are to be cached in GPU memory.
+            feats (List[str]): List of strings corresponding to feature keys that should be cached.
+        """
+        self.cache_size = node_ids.shape[0]
+        # Reset all
+        self.nid_is_on_gpu[:] = False
+        self.nid_is_on_gpu[node_ids] = True
+        self.cache_mapping[node_ids] = torch.arange(
+            self.cache_size, device=self.device)
+
+        self.reverse_mapping = node_ids
+        for feat in feats:
+            self.cache[feat] = self.g.ndata[feat][node_ids].to(self.device)
+        
+            self.start_manager()
+            self.cache_manager.set_cache(self.g.ndata[feat], self.nid_is_on_gpu, 
+                                        self.cache_mapping, self.reverse_mapping, self.cache[feat])
+            # TODO support more than 1 featuer type
+            break
+
     def compute_topk(self):
         with torch.cuda.stream(self.topk_stream):
             self.is_cache_candidate = torch.zeros(self.num_total_nodes, dtype=torch.bool, device=self.device)
             _, self.most_common_nids = torch.topk(self.counts.to(self.device, non_blocking=True), self.cache_size, sorted=False)
 
             self.topk_started = True
-            
-            # most_common_nids = most_common_nids.cpu()
-            # most_common_mask = torch.zeros(self.g.num_nodes(), dtype=torch.bool)
-            # most_common_mask[most_common_nids] = True
 
     def update_cache(self, feats):
         torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
@@ -643,6 +669,7 @@ class ManagedCacheServer(FeatureServer):
             with Timer('compute gpu/cpu mask'):
                 gpu_mask = self.nid_is_on_gpu[node_ids]
                 cpu_mask = ~gpu_mask
+                cpu_mask_devCUDA = cpu_mask.to(self.device)
 
             if self.profile:
                 self.profile_info['request_size'].append(node_ids.shape[0])
@@ -677,8 +704,9 @@ class ManagedCacheServer(FeatureServer):
 
                 with Timer('CPU-GPU copy', track_cuda=True):
                     # Copy CPU features
-                    res_tensor[cpu_mask] = required_cpu_features.to(
+                    cpu_feats = required_cpu_features.to(
                         self.device, non_blocking=True)
+                    res_tensor[cpu_mask_devCUDA] = cpu_feats
                     # Copy MFGs
                     mfgs = [mfg.to(self.device) for mfg in mfgs]
 
@@ -700,38 +728,42 @@ class ManagedCacheServer(FeatureServer):
                             #!! This first line is kinda weird but goes here to allow
                             #!! self.most_common_nids to be computed async in self.topk_stream
                             self.is_cache_candidate[self.most_common_nids] = True
-                            cache_size = self.cache[feat].shape[0]
+                            self.cache_manager.set_cache_candidates(self.is_cache_candidate)
 
-                            cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
+                    with Timer('place in queue'):
+                        self.cache_manager.place_feats_in_queue(cpu_feats, gpu_nids[cpu_mask_devCUDA])
+                            # cache_size = self.cache[feat].shape[0]
 
-                            # with Timer('nid to add mask'):
-                            cpu_mask = cpu_mask.to('cuda') 
-                            nids_to_add_mask = cpu_mask & self.is_cache_candidate[gpu_nids]
-                            nids_to_add = gpu_nids[nids_to_add_mask]
+                            # cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
 
-                            # with Timer('replace nid mask'):
-                            # nids that are in cache and can be replaced in this epoch
-                            replace_nid_mask = cache_mask_device & ~self.is_cache_candidate
+                            # # with Timer('nid to add mask'):
+                            # cpu_mask = cpu_mask.to('cuda') 
+                            # nids_to_add_mask = cpu_mask & self.is_cache_candidate[gpu_nids]
+                            # nids_to_add = gpu_nids[nids_to_add_mask]
 
-                            replace_nids = self.big_graph_arange[replace_nid_mask]
+                            # # with Timer('replace nid mask'):
+                            # # nids that are in cache and can be replaced in this epoch
+                            # replace_nid_mask = cache_mask_device & ~self.is_cache_candidate
 
-                            # with Timer('truncate'):
-                            num_to_add = min(replace_nids.shape[0], nids_to_add.shape[0], cache_size)
-                            replace_nids = replace_nids[:num_to_add]
-                            nids_to_add = nids_to_add[:num_to_add]
+                            # replace_nids = self.big_graph_arange[replace_nid_mask]
 
-                            # with Timer('meta update'):
-                            cache_mask_device[replace_nids] = False
-                            cache_mask_device[nids_to_add] = True
-                            self.nid_is_on_gpu.copy_(cache_mask_device, non_blocking=True)
-                            cache_slots = self.cache_mapping[replace_nids]
-                            self.cache_mapping[replace_nids] = -1
-                            self.cache_mapping[nids_to_add] = cache_slots
+                            # # with Timer('truncate'):
+                            # num_to_add = min(replace_nids.shape[0], nids_to_add.shape[0], cache_size)
+                            # replace_nids = replace_nids[:num_to_add]
+                            # nids_to_add = nids_to_add[:num_to_add]
 
-                            old_shape = self.cache[feat].shape
-                            # with Timer('actual move'):
-                            # Recall the above truncation - the features we want will be at the front of the result tensor
-                            self.cache[feat][cache_slots] = res[feat][cpu_mask][:num_to_add]
-                            assert(self.cache[feat].shape == old_shape)
+                            # # with Timer('meta update'):
+                            # cache_mask_device[replace_nids] = False
+                            # cache_mask_device[nids_to_add] = True
+                            # self.nid_is_on_gpu.copy_(cache_mask_device, non_blocking=True)
+                            # cache_slots = self.cache_mapping[replace_nids]
+                            # self.cache_mapping[replace_nids] = -1
+                            # self.cache_mapping[nids_to_add] = cache_slots
+
+                            # old_shape = self.cache[feat].shape
+                            # # with Timer('actual move'):
+                            # # Recall the above truncation - the features we want will be at the front of the result tensor
+                            # self.cache[feat][cache_slots] = res[feat][cpu_mask][:num_to_add]
+                            # assert(self.cache[feat].shape == old_shape)
 
         return res, mfgs

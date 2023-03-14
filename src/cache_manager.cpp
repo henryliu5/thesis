@@ -28,5 +28,7 @@ PYBIND11_MODULE(fast_inference_cpp, m)
         .def("thread_exit", &CacheManager::threadExit)
         .def("get_most_common_nodes_not_in_cache", &CacheManager::getMostCommonNodesNotInCache)
         .def("get_least_used_cache_indices", &CacheManager::getLeastUsedCacheIndices)
-        .def("receive_new_features", &CacheManager::receiveNewFeatures);
+        .def("receive_new_features", &CacheManager::receiveNewFeatures)
+        .def("set_cache_candidates", &CacheManager::setCacheCandidates)
+        .def("place_feats_in_queue", &CacheManager::placeFeatsInQueue);
 }

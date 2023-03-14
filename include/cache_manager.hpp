@@ -182,6 +182,8 @@ private:
     TensorHolder gpu_feat_holder;
     bool use_gpu_transfer;
     torch::Tensor topk_mask;
+    concurrent_queue<std::tuple<torch::Tensor, torch::Tensor>> gpu_q;
+    torch::Tensor cache_candidate_mask;
 
     void stageNewFeatures(torch::Tensor nids)
     {
@@ -409,7 +411,7 @@ public:
     CacheManager(const int num_total_nodes, const int cache_size, const int update_frequency, const int decay_frequency, const int staging_area_size, bool use_gpu_transfer)
         : cache_size(cache_size)
         , worker_alive(true)
-        , worker_thread(&CacheManager::worker, this)
+        , worker_thread(&CacheManager::smallWorker, this)
         , update_frequency(update_frequency)
         , decay_frequency(decay_frequency)
         , staging_area_size(staging_area_size)
@@ -431,6 +433,7 @@ public:
             // while(!q.empty()); // This waits for worker to finish processing
             worker_alive = false;
             q.disable();
+            gpu_q.disable();
 
             std::cout << "bool set, calling join" << std::endl;
             worker_thread.join();
@@ -451,7 +454,7 @@ public:
         cpu_staging_area = torch::empty({staging_area_size, graph_features.sizes()[1]}, torch::device(torch::kCPU).pinned_memory(true).dtype(torch::kFloat32));
         gpu_staging_area = torch::empty(staging_area_size, torch::device(torch::kCUDA).requires_grad(false).dtype(torch::kFloat32));
 
-        big_graph_arange = torch::arange(counts.sizes()[0]);
+        big_graph_arange = torch::arange(counts.sizes()[0], torch::device(torch::kCUDA));
     }
 
     void setUpdateFrequency(int update_frequency)
@@ -577,6 +580,69 @@ public:
         ASSERT(use_gpu_transfer, "GPU transfer must be enabled");
         gpu_feat_holder.setFeats(feats, nids);
     }
+
+    void placeFeatsInQueue(torch::Tensor feats, torch::Tensor nids){
+        ASSERT(use_gpu_transfer, "GPU transfer must be enabled");
+        gpu_q.push({feats, nids});
+    }
+
+    void setCacheCandidates(torch::Tensor c){
+        this->cache_candidate_mask = c;
+    }
+
+    void smallWorker()
+        {
+            try{
+            c10::InferenceMode infer_guard;
+            at::cuda::CUDAStream myStream = at::cuda::getStreamFromPool(false, 0);
+            at::cuda::CUDAStreamGuard guard(myStream);
+            pthread_setname_np(pthread_self(), "CacheManager smallWorker");
+            while (worker_alive) {
+                std::tuple<torch::Tensor, torch::Tensor> p;
+                if(gpu_q.wait_and_pop(p)){
+                    /**
+                     * Needed:
+                     * - is_cache_candidate - missing
+                     * - cache_mask - done
+                     * - big_graph_arange - done
+                     * - cache_mapping - done
+                     * - most_common_nids?
+                    */
+                    torch::Tensor new_feats = std::get<0>(p);
+                    torch::Tensor new_nids = std::get<1>(p);
+
+                    // Not actually pinend, won't be async
+                    new_nids = new_nids.to(torch::device(torch::kCUDA), true);
+
+                    auto cache_mask_device = cache_mask.to(torch::device(torch::kCUDA), true);
+                    // TODO check equivalent in python
+                    auto nids_to_add = new_nids.index({cache_candidate_mask.index({new_nids})});
+
+                    auto replace_nid_mask = cache_mask_device & ~cache_candidate_mask;
+
+                    auto replace_nids = big_graph_arange.index({replace_nid_mask});
+
+                    auto num_to_add = std::min(replace_nids.sizes()[0], std::min(nids_to_add.sizes()[0], (const long) cache_size));
+                    replace_nids = replace_nids.slice(0, 0, num_to_add);
+                    nids_to_add = nids_to_add.slice(0, 0, num_to_add);
+
+                    cache_mask_device.index_put_({replace_nids}, false);
+                    cache_mask_device.index_put_({nids_to_add}, true);
+                    cache_mask.copy_(cache_mask_device, true);
+                    auto cache_slots = cache_mapping.index({replace_nids});
+
+                    cache_mapping.index_put_({replace_nids}, -1);
+                    cache_mapping.index_put_({nids_to_add}, cache_slots);
+
+                    cache.index_put_({cache_slots}, new_feats.slice(0, 0, num_to_add));
+
+                }
+                
+            }
+            std::cout << "worker exited" << std::endl;
+            }
+            catch (const c10::Error& e) {   cout << e.what() << endl; throw std::invalid_argument("Failed to load model: " + e.msg()); }
+        }
 
     void gilRelease(std::function<void()> f);
 };
