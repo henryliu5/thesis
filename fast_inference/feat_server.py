@@ -600,6 +600,7 @@ class ManagedCacheServer(FeatureServer):
         self.topk_stream = torch.cuda.Stream(device='cuda')
         self.update_stream = torch.cuda.Stream(device='cuda')
 
+        self.is_cache_candidate = None
         self.most_common_nids = None
         self.topk_started = False
 
@@ -637,7 +638,12 @@ class ManagedCacheServer(FeatureServer):
 
     def compute_topk(self):
         with torch.cuda.stream(self.topk_stream):
-            self.is_cache_candidate = torch.zeros(self.num_total_nodes, dtype=torch.bool, device=self.device)
+            if self.is_cache_candidate is None:
+                self.is_cache_candidate = torch.zeros(self.num_total_nodes, dtype=torch.bool, device=self.device)
+                self.cache_manager.set_cache_candidates(self.is_cache_candidate)
+            else:
+                torch.zeros(self.num_total_nodes, out=self.is_cache_candidate, dtype=torch.bool, device=self.device)
+
             _, self.most_common_nids = torch.topk(self.counts.to(self.device, non_blocking=True), self.cache_size, sorted=False)
 
             self.topk_started = True
@@ -728,10 +734,9 @@ class ManagedCacheServer(FeatureServer):
                             #!! This first line is kinda weird but goes here to allow
                             #!! self.most_common_nids to be computed async in self.topk_stream
                             self.is_cache_candidate[self.most_common_nids] = True
-                            self.cache_manager.set_cache_candidates(self.is_cache_candidate)
 
-                    with Timer('place in queue'):
-                        self.cache_manager.place_feats_in_queue(cpu_feats, gpu_nids[cpu_mask_devCUDA])
+                        with Timer('place in queue'):
+                            self.cache_manager.place_feats_in_queue(cpu_feats, gpu_nids[cpu_mask_devCUDA])
                             # cache_size = self.cache[feat].shape[0]
 
                             # cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
