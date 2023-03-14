@@ -94,15 +94,14 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
                 mfgs = sampler.sample(trace.nids[i:i+BATCH_SIZE], trace.edges[i:i+BATCH_SIZE], use_gpu_sampling=use_gpu_sampling)
 
                 with Timer(name="dataloading", track_cuda=True):
-                    with Timer('compute topk'):
-                        if cache_type == 'cpp' or cache_type == 'count':
-                            feat_server.compute_topk()
-
                     required_feats = mfgs[0].ndata['_ID']['_N']
                     if feat_server:
                         # Cache: (update) + feature gather + CPU-GPU copy
                         with Timer(name="update cache", track_cuda=True):
                             if (i // k) > processed + 1:
+                                if cache_type == 'cpp' or cache_type == 'count':
+                                    feat_server.compute_topk()
+
                                 feat_server.update_cache(['feat'])
                                 processed = i // k  
 
