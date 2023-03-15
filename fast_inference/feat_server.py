@@ -140,7 +140,7 @@ class FeatureServer:
 class CountingFeatServer(FeatureServer):
     def init_counts(self, num_total_nodes):
         self.num_total_nodes = num_total_nodes
-        self.counts = torch.zeros(num_total_nodes, pin_memory=True)
+        self.counts = torch.zeros(num_total_nodes, dtype=torch.short, device=self.device)
 
         self.topk_stream = torch.cuda.Stream(device='cuda')
         self.update_stream = torch.cuda.Stream(device='cuda')
@@ -194,9 +194,9 @@ class CountingFeatServer(FeatureServer):
             node_ids (torch.Tensor): A 1-D tensor of node IDs.
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
-        node_ids = node_ids.cpu()
         with Timer('update counts'):
             self.counts[node_ids] += 1
+        node_ids = node_ids.cpu()
         return super().get_features(node_ids, feats, mfgs)
     
 class LFUServer(FeatureServer):
@@ -595,7 +595,7 @@ class ManagedCacheServer(FeatureServer):
 
     def init_counts(self, num_total_nodes):
         self.num_total_nodes = num_total_nodes
-        self.counts = torch.zeros(num_total_nodes, pin_memory=True)
+        self.counts = torch.zeros(num_total_nodes, dtype=torch.short, device=self.device)
 
         self.topk_stream = torch.cuda.Stream(device='cuda')
         self.update_stream = torch.cuda.Stream(device='cuda')
@@ -671,9 +671,9 @@ class ManagedCacheServer(FeatureServer):
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
         gpu_nids = node_ids
-        node_ids = node_ids.cpu()
         with Timer('update counts'):
-            self.counts[node_ids] += 1
+            self.counts[gpu_nids] += 1
+        node_ids = node_ids.cpu()
 
         if mfgs is None:
             mfgs = []

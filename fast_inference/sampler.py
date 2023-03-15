@@ -60,37 +60,37 @@ class InferenceSampler:
             # Create first layer message flow graph by looking at required neighbors
             all_seeds = torch.cat((required_nodes_unique, new_nid))
 
-            with Timer('create sampling graph'):
-                # Get existing edges in the graph
-                u, v = self.g.in_edges(required_nodes_unique)
-                sampling_graph = dgl.graph((u, v), num_nodes=max(self.g.num_nodes(), new_nid.max().item()), device=torch.device('cuda'))
+            # with Timer('create sampling graph'):
+            # Get existing edges in the graph
+            u, v = self.g.in_edges(required_nodes_unique)
+            sampling_graph = dgl.graph((u, v), num_nodes=max(self.g.num_nodes(), new_nid.max().item()), device=torch.device('cuda'))
 
-            with Timer('create new edges'):
-                out_interleave_count = torch.tensor([edges[idx]["out"].shape[0] for idx in range(batch_size)], device='cuda')
-                u = torch.repeat_interleave(new_nid, out_interleave_count)
-                v = torch.cat([edges[idx]["out"] for idx in range(batch_size)]).to('cuda')
-        
-            with Timer('update sampling graph with new edges'):
-                sampling_graph.add_edges(u, v)
+            # with Timer('create new edges'):
+            out_interleave_count = torch.tensor([edges[idx]["out"].shape[0] for idx in range(batch_size)], device='cuda')
+            u = torch.repeat_interleave(new_nid, out_interleave_count)
+            v = torch.cat([edges[idx]["out"] for idx in range(batch_size)]).to('cuda')
+    
+            # with Timer('update sampling graph with new edges'):
+            sampling_graph.add_edges(u, v)
 
 
-            with Timer('dgl sample neighbors'):
-                if use_gpu_sampling:
-                    # NOTE roughly 10x faster
-                    assert (self.g.device != torch.device('cpu'))
-                    frontier = dgl.sampling.sample_neighbors(sampling_graph, required_nodes_unique.to('cuda'), -1)
-                else:
-                    frontier = dgl.sampling.sample_neighbors(sampling_graph, required_nodes_unique, -1)
+            # with Timer('dgl sample neighbors'):
+            if use_gpu_sampling:
+                # NOTE roughly 10x faster
+                assert (self.g.device != torch.device('cpu'))
+                frontier = dgl.sampling.sample_neighbors(sampling_graph, required_nodes_unique.to('cuda'), -1)
+            else:
+                frontier = dgl.sampling.sample_neighbors(sampling_graph, required_nodes_unique, -1)
 
-            with Timer('dgl first to block'):
-                first_mfg = dgl.to_block(frontier, all_seeds) # Need to do cat here as should have target node
+            # with Timer('dgl first to block'):
+            first_mfg = dgl.to_block(frontier, all_seeds) # Need to do cat here as should have target node
 
-            with Timer('dgl create mfg graph'):
-                # Create a message flow graph using the new edges
-                mfg = dgl.graph((required_nodes, torch.repeat_interleave(new_nid, interleave_count)))
+            # with Timer('dgl create mfg graph'):
+            # Create a message flow graph using the new edges
+            mfg = dgl.graph((required_nodes, torch.repeat_interleave(new_nid, interleave_count)))
 
-            with Timer('dgl last mfg to block'):
-                last_mfg = dgl.to_block(mfg, new_nid)
+            # with Timer('dgl last mfg to block'):
+            last_mfg = dgl.to_block(mfg, new_nid)
         
             mfgs.append(first_mfg)
             mfgs.append(last_mfg)
