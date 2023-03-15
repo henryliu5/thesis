@@ -7,7 +7,7 @@
 // how pybind is added to CMake targets (pybind_add_module), which is not ideal
 // for the cpp_test.cpp
 void CacheManager::gilRelease(std::function<void()> f) {
-    std::cout << "releasing gil" << std::endl;
+    // std::cout << "releasing gil" << std::endl;
     py::gil_scoped_release release;
     f();
 }
@@ -30,5 +30,7 @@ PYBIND11_MODULE(fast_inference_cpp, m)
         .def("get_least_used_cache_indices", &CacheManager::getLeastUsedCacheIndices)
         .def("receive_new_features", &CacheManager::receiveNewFeatures)
         .def("set_cache_candidates", &CacheManager::setCacheCandidates)
-        .def("place_feats_in_queue", &CacheManager::placeFeatsInQueue);
+        .def("place_feats_in_queue", &CacheManager::placeFeatsInQueue)
+        .def("lock", &CacheManager::lock)
+        .def("unlock", &CacheManager::unlock);
 }

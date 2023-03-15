@@ -651,13 +651,14 @@ class ManagedCacheServer(FeatureServer):
             self.topk_processed = False
 
     def update_cache(self, feats):
-        # TODO figure out why this doesn't work when put by placing features in the queue
-        if not self.topk_processed:
-            torch.cuda.current_stream().wait_stream(self.topk_stream)
-            #!! This first line is kinda weird but goes here to allow
-            #!! self.most_common_nids to be computed async in self.topk_stream
-            self.is_cache_candidate[self.most_common_nids] = True
-            self.topk_processed = True
+        if self.topk_started:
+            # TODO figure out why this doesn't work when put by placing features in the queue
+            if not self.topk_processed:
+                torch.cuda.current_stream().wait_stream(self.topk_stream)
+                #!! This first line is kinda weird but goes here to allow
+                #!! self.most_common_nids to be computed async in self.topk_stream
+                self.is_cache_candidate[self.most_common_nids] = True
+                self.topk_processed = True
 
         torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
 
@@ -680,6 +681,9 @@ class ManagedCacheServer(FeatureServer):
 
         with Timer('get_features()'):
             res = {}
+
+            self.cache_manager.thread_enter()
+            # self.cache_manager.lock()
 
             # Used to mask this particular request - not to mask the cache!!
             with Timer('compute gpu/cpu mask'):
@@ -734,7 +738,9 @@ class ManagedCacheServer(FeatureServer):
                         assert(torch.all(mapping >= 0))
                         required_gpu_features = self.cache[feat][mapping]
                         res_tensor[gpu_mask] = required_gpu_features
-                
+
+                self.cache_manager.thread_exit()
+                # self.cache_manager.unlock()
                 res[feat] = res_tensor
 
                 with Timer('cache update'):

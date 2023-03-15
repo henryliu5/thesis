@@ -1,6 +1,7 @@
-from fast_inference.feat_server import FeatureServer
+from fast_inference.feat_server import FeatureServer, ManagedCacheServer, CountingFeatServer
 import dgl
 import torch
+from tqdm import tqdm
 
 def test_feat_server():
     ''' Test feature cache server on small input '''
@@ -31,5 +32,46 @@ def test_feat_server():
     assert (torch.all(torch.eq(feats['x'].cpu(), x_feats[torch.LongTensor([0, 1, 2])])))
     assert (torch.all(torch.eq(feats['y'].cpu(), y_feats[torch.LongTensor([0, 1, 2])])))
 
+def test_new_server_correctness():
+    ''' Check that feature stores actually return the correct value.
+        Short dataloading tests race conditions and general correctness.
+    '''
+    device = 'cuda:0'
+
+    n = 100
+    g = dgl.graph((torch.zeros(n, dtype=torch.long), torch.arange(n, dtype=torch.long)), num_nodes=n)
+    x_feats = torch.arange(n, dtype=torch.float).reshape(n, 1)
+    g.ndata['x'] = x_feats
+
+    feat_server = ManagedCacheServer(g, device=device, track_features=['x'])
+    feat_server.set_static_cache(node_ids=torch.arange(n / 10, dtype=torch.long), feats=['x'])
+    feat_server.init_counts(n)
+
+    do_topk = 16
+    for i in tqdm(range(5000)):
+        requested = torch.randint(0, n, (32,), device=device)
+
+        if i % do_topk == 0:
+            feat_server.compute_topk()
+            feat_server.update_cache(['x'])
+        
+        result, _ = feat_server.get_features(requested, ['x'])
+
+        expected = x_feats[requested.cpu()]
+        assert (result['x'].device == torch.device(device))
+        
+        if not torch.all(torch.eq(result['x'].cpu(), expected)):
+            print(result['x'].cpu())
+            print(expected)
+
+        assert (torch.all(torch.eq(result['x'].cpu(), expected)))
+    
+
 if __name__ == '__main__':
-    test_feat_server()
+    # from torch.profiler import profile, ProfilerActivity, record_function
+    test_new_server_correctness()
+    # rand_seed = 12345
+    # torch.manual_seed(rand_seed)
+    # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+    #     test_new_server_correctness()
+    # prof.export_chrome_trace('debug.json')

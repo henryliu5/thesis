@@ -184,6 +184,7 @@ private:
     torch::Tensor topk_mask;
     concurrent_queue<std::tuple<torch::Tensor, torch::Tensor>> gpu_q;
     torch::Tensor cache_candidate_mask;
+    std::mutex cache_mutex;
 
     void stageNewFeatures(torch::Tensor nids)
     {
@@ -590,6 +591,14 @@ public:
         this->cache_candidate_mask = c;
     }
 
+    void lock(){
+        gilRelease([this](){cache_mutex.lock();});
+    }
+
+    void unlock(){
+        cache_mutex.unlock();
+    }
+
     void smallWorker()
         {
             try{
@@ -600,6 +609,8 @@ public:
             while (worker_alive) {
                 std::tuple<torch::Tensor, torch::Tensor> p;
                 if(gpu_q.wait_and_pop(p)){
+                    // TODO add setting to enable mutex or use atomics
+                    // cache_mutex.lock();
                     /**
                      * Needed:
                      * - is_cache_candidate - missing
@@ -616,19 +627,32 @@ public:
 
                     auto cache_mask_device = cache_mask.to(torch::device(torch::kCUDA), true);
                     // TODO check equivalent in python
-                    auto nids_to_add = new_nids.index({cache_candidate_mask.index({new_nids})});
+                    auto new_nid_mask = cache_candidate_mask.index({new_nids});
+                    auto nids_to_add = new_nids.index({new_nid_mask});
+                    new_feats = new_feats.index({new_nid_mask});
 
                     auto replace_nid_mask = cache_mask_device & ~cache_candidate_mask;
 
                     auto replace_nids = big_graph_arange.index({replace_nid_mask});
 
                     auto num_to_add = std::min(replace_nids.sizes()[0], std::min(nids_to_add.sizes()[0], (const long) cache_size));
+                    if(num_to_add == 0){
+                        // cache_mutex.unlock();
+                        continue;
+                    }
+
                     replace_nids = replace_nids.slice(0, 0, num_to_add);
                     nids_to_add = nids_to_add.slice(0, 0, num_to_add);
 
+                    // Blind write 0's into cache mask
                     cache_mask_device.index_put_({replace_nids}, false);
-                    cache_mask_device.index_put_({nids_to_add}, true);
                     cache_mask.copy_(cache_mask_device, true);
+
+                    // 2. Wait for enough threads to finish
+                    long fetchers_at_start = started_threads.load();
+                    //!! Need to make sure worker is alive in this loop!
+                    while (finished_threads.load() < fetchers_at_start && worker_alive)
+                        ;
                     auto cache_slots = cache_mapping.index({replace_nids});
 
                     cache_mapping.index_put_({replace_nids}, -1);
@@ -636,6 +660,10 @@ public:
 
                     cache.index_put_({cache_slots}, new_feats.slice(0, 0, num_to_add));
 
+                    // Now write 1's
+                    cache_mask_device.index_put_({nids_to_add}, true);
+                    cache_mask.copy_(cache_mask_device, true);
+                    cache_mutex.unlock();
                 }
                 
             }
