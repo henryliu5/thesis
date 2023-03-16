@@ -22,7 +22,7 @@ def test_feat_server():
     assert (server.cache['x'].shape == torch.Size([3, 3]))
     assert (server.cache['y'].shape == torch.Size([3, 5, 4]))
 
-    feats, _ = server.get_features(torch.LongTensor([0, 1, 2]), feats=['x', 'y'], mfgs=None)
+    feats, _ = server.get_features(torch.tensor([0, 1, 2], device=device, dtype=torch.long), feats=['x', 'y'], mfgs=None)
     
     # Check feats are all on device
     assert(feats['x'].device == torch.device(device))
@@ -38,16 +38,16 @@ def test_new_server_correctness():
     '''
     device = 'cuda:0'
 
-    n = 100
+    n = 1000
     g = dgl.graph((torch.zeros(n, dtype=torch.long), torch.arange(n, dtype=torch.long)), num_nodes=n)
     x_feats = torch.arange(n, dtype=torch.float).reshape(n, 1)
     g.ndata['x'] = x_feats
 
-    feat_server = ManagedCacheServer(g, device=device, track_features=['x'])
-    feat_server.set_static_cache(node_ids=torch.arange(n / 10, dtype=torch.long), feats=['x'])
+    feat_server = CountingFeatServer(g, device=device, track_features=['x'])
+    feat_server.set_static_cache(node_ids=torch.arange(int(n * 0.8), dtype=torch.long), feats=['x'])
     feat_server.init_counts(n)
 
-    do_topk = 16
+    do_topk = 10
     for i in tqdm(range(5000)):
         requested = torch.randint(0, n, (32,), device=device)
 

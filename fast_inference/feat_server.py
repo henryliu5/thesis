@@ -20,7 +20,7 @@ class FeatureServer:
         assert (g.device == torch.device('cpu'))
         self.g = g
         self.device = device
-        self.nid_is_on_gpu = torch.zeros(g.num_nodes(), dtype=torch.bool, pin_memory=True)
+        self.nid_is_on_gpu = torch.zeros(g.num_nodes(), dtype=torch.bool, device=self.device)
         # TODO should this go on GPU?
         self.cache_mapping = - \
             torch.ones(g.num_nodes(), device=self.device).long()
@@ -45,11 +45,11 @@ class FeatureServer:
             node_ids (torch.Tensor): A 1-D tensor of node IDs.
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
+        assert(node_ids.device != torch.device('cpu'))
         if mfgs is None:
             mfgs = []
 
         with Timer('get_features()'):
-            node_ids = node_ids.cpu()
             res = {}
 
             # Used to mask this particular request - not to mask the cache!!
@@ -72,7 +72,7 @@ class FeatureServer:
 
                 # Start copy to GPU mem
                 with Timer('mask cpu feats'):
-                    m = node_ids[cpu_mask]
+                    m = node_ids[cpu_mask].cpu()
                     # TODO add parameter to control "use_pinned_mem"
                     # Perform resizing if necessary
                     if self.use_pinned_mem:
@@ -140,7 +140,7 @@ class FeatureServer:
 class CountingFeatServer(FeatureServer):
     def init_counts(self, num_total_nodes):
         self.num_total_nodes = num_total_nodes
-        self.counts = torch.zeros(num_total_nodes, dtype=torch.short, device=self.device)
+        self.counts = torch.zeros(num_total_nodes, dtype=torch.long, device=self.device)
 
         self.topk_stream = torch.cuda.Stream(device='cuda')
         self.update_stream = torch.cuda.Stream(device='cuda')
@@ -149,20 +149,24 @@ class CountingFeatServer(FeatureServer):
         self.topk_started = False
 
     def compute_topk(self):
-        with torch.cuda.stream(self.topk_stream):
-            _, self.most_common_nids = torch.topk(self.counts.to(self.device, non_blocking=True), self.cache_size, sorted=False)
-            self.topk_started = True
+        # with torch.cuda.stream(self.topk_stream):
+        #     _, self.most_common_nids = torch.topk(self.counts.to(self.device, non_blocking=True), self.cache_size, sorted=False)
+        #     self.topk_started = True
+        pass
 
     def update_cache(self, feats):
         with torch.cuda.stream(self.update_stream):
-            # Resets cache mask (nothing stored anymore)
-            if not self.topk_started:
-                _, most_common_nids = torch.topk(self.counts.to(self.device), self.cache_size, sorted=False)
-            else:
-                torch.cuda.current_stream().wait_stream(self.topk_stream)
-                most_common_nids = self.most_common_nids
+            v, most_common_nids = torch.topk(self.counts.to(self.device), self.cache_size, sorted=False)
+            assert(torch.all(self.counts >= 0))
+            # # Resets cache mask (nothing stored anymore)
+            # if not self.topk_started:
+            #     _, most_common_nids = torch.topk(self.counts.to(self.device), self.cache_size, sorted=False)
+            # else:
+            #     torch.cuda.current_stream().wait_stream(self.topk_stream)
+            #     most_common_nids = self.most_common_nids
 
-            cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
+            # cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
+            cache_mask_device = self.nid_is_on_gpu
             most_common_mask = torch.zeros(self.num_total_nodes, dtype=torch.bool, device='cuda')
             most_common_mask[most_common_nids] = True
 
@@ -181,9 +185,10 @@ class CountingFeatServer(FeatureServer):
 
             self.cache_mapping[requires_update_mask] = requires_update_cache_idx
             #!! Need this weird copy_ to perform device to host non blocking transfer (and into pinned memory buffer)
-            self.nid_is_on_gpu.copy_(most_common_mask, non_blocking=True)
+            self.nid_is_on_gpu = most_common_mask
             self.cache_mapping[~most_common_mask] = -1
             torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+            
         torch.cuda.current_stream().wait_stream(self.update_stream)
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
@@ -197,7 +202,7 @@ class CountingFeatServer(FeatureServer):
         """
         with Timer('update counts'):
             self.counts[node_ids] += 1
-        node_ids = node_ids.cpu()
+
         return super().get_features(node_ids, feats, mfgs)
     
 class LFUServer(FeatureServer):
@@ -675,7 +680,6 @@ class ManagedCacheServer(FeatureServer):
         gpu_nids = node_ids
         with Timer('update counts'):
             self.counts[gpu_nids] += 1
-        node_ids = node_ids.cpu()
 
         if mfgs is None:
             mfgs = []
@@ -690,7 +694,6 @@ class ManagedCacheServer(FeatureServer):
             with Timer('compute gpu/cpu mask'):
                 gpu_mask = self.nid_is_on_gpu[node_ids]
                 cpu_mask = ~gpu_mask
-                cpu_mask_devCUDA = cpu_mask.to(self.device)
 
             if self.profile:
                 self.profile_info['request_size'].append(node_ids.shape[0])
@@ -718,16 +721,16 @@ class ManagedCacheServer(FeatureServer):
                 with Timer('feature gather'):
                     if self.use_pinned_mem:
                         # Places indices directly into pinned memory buffer
-                        torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
+                        torch.index_select(self.g.ndata[feat], 0, m.cpu(), out=required_cpu_features)
                     else:
                         #"slow mode"
-                        required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
+                        required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m.cpu())
 
                 with Timer('CPU-GPU copy', track_cuda=True):
                     # Copy CPU features
                     cpu_feats = required_cpu_features.to(
                         self.device, non_blocking=True)
-                    res_tensor[cpu_mask_devCUDA] = cpu_feats
+                    res_tensor[cpu_mask] = cpu_feats
                     # Copy MFGs
                     mfgs = [mfg.to(self.device) for mfg in mfgs]
 
@@ -755,7 +758,9 @@ class ManagedCacheServer(FeatureServer):
                         #     self.topk_processed = True
 
                         # with Timer('place in queue'):
-                        self.cache_manager.place_feats_in_queue(cpu_feats, gpu_nids[cpu_mask_devCUDA])
+                        # !! WARNING: Must use "m" here!! Since the node ids and mask are on GPU, the CPU node id tensor
+                        # !! must be fully materialized by the time the tensor is placed on the queue
+                        self.cache_manager.place_feats_in_queue(cpu_feats, m)
                             # cache_size = self.cache[feat].shape[0]
 
                             # cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)

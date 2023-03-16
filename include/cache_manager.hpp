@@ -625,21 +625,32 @@ public:
                     torch::Tensor new_feats = std::get<0>(p);
                     torch::Tensor new_nids = std::get<1>(p);
 
-                    // Not actually pinend, won't be async
-                    new_nids = new_nids.to(torch::device(torch::kCUDA), true);
+                    // Not actually pinned, won't be async
+                    // new_nids = new_nids.to(torch::device(torch::kCUDA), true);
 
-                    // auto cache_mask_device = cache_mask.to(torch::device(torch::kCUDA), true);
-                    auto cache_mask_device = cache_mapping >= 0;
-                    // TODO check equivalent in python
+                    auto cache_mask_device = cache_mask;//.to(torch::device(torch::kCUDA), true);
+                    // auto cache_mask_device = cache_mapping >= 0;
+
+                    ASSERT(new_nids.dtype() == torch::kLong, "new nids must be longs");
+                    ASSERT(new_nids.max().item<long>() < cache_candidate_mask.sizes()[0], "Out of bounds, max: " << new_nids.max().item<long>() << " length " << cache_candidate_mask.sizes()[0]);
+                    ASSERT(new_nids.min().item<long>() >= 0 && new_nids.max().item<long>() < cache_candidate_mask.sizes()[0], "new_nids out of bounds, min " << new_nids.min().item<long>() << " max, " << new_nids.max().item<long>() << " indexing into " << cache_candidate_mask.sizes()[0]);
+
                     auto new_nid_mask = cache_candidate_mask.index({new_nids});
+                    // TODO figure out "usefulness" threshold, can leave right after computing nids to add shape
                     auto nids_to_add = new_nids.index({new_nid_mask});
                     new_feats = new_feats.index({new_nid_mask});
 
                     auto replace_nid_mask = cache_mask_device & ~cache_candidate_mask;
 
-                    auto replace_nids = big_graph_arange.index({replace_nid_mask});
+                    // auto replace_nids = big_graph_arange.index({replace_nid_mask});
+                    // TODO consider replacing this by computing the reverse mapping, then can just do same op as above
+                    auto replace_nids = replace_nid_mask.nonzero();
+
+                    replace_nids = replace_nids.reshape({replace_nids.sizes()[0]});
 
                     auto num_to_add = std::min(replace_nids.sizes()[0], std::min(nids_to_add.sizes()[0], (const long) cache_size));
+
+                    // TODO figure out "usefulness" threshold
                     if(num_to_add == 0){
                         // cache_mutex.unlock();
                         continue;
@@ -648,14 +659,10 @@ public:
                     replace_nids = replace_nids.slice(0, 0, num_to_add);
                     nids_to_add = nids_to_add.slice(0, 0, num_to_add);
 
+                    ASSERT(replace_nids.min().item<long>() >= 0 && replace_nids.max().item<long>() < cache_mask_device.sizes()[0], "replace_nids out of bounds");
                     // Blind write 0's into cache mask
                     cache_mask_device.index_put_({replace_nids}, false);
-                    cache_mask.copy_(cache_mask_device, true);
-                    // cout << "replace_nid_view size: " << replace_nids.sizes() << " dtype: " << replace_nids.dtype() << " buf size: " << cache_size_buf.sizes() << " dtype " << cache_size_buf.dtype() << endl;
-                    // auto replace_nid_view = cache_size_buf.resize_(replace_nids.sizes());
-                    // replace_nid_view.copy_(replace_nids, false);
-                    // myStream.synchronize();
-                    // cache_mask.index_put_({replace_nid_view}, false);
+                    myStream.synchronize();
 
                     // 2. Wait for enough threads to finish
                     long fetchers_at_start = started_threads.load();
@@ -667,14 +674,13 @@ public:
                     cache_mapping.index_put_({replace_nids}, -1);
                     cache_mapping.index_put_({nids_to_add}, cache_slots);
 
+                    ASSERT(cache_slots.min().item<long>() >= 0 && cache_slots.max().item<long>() < cache_size, "cache slots out of bounds");
+
                     cache.index_put_({cache_slots}, new_feats.slice(0, 0, num_to_add));
 
+                    ASSERT(nids_to_add.min().item<long>() >= 0 && nids_to_add.max().item<long>() < cache_mask_device.sizes()[0], "nids to add out of bounds");
                     // Now write 1's
                     cache_mask_device.index_put_({nids_to_add}, true);
-                    cache_mask.copy_(cache_mask_device, true);
-                    // auto nids_to_add_view = cache_size_buf.resize_(nids_to_add.sizes());
-                    // nids_to_add_view.copy_(nids_to_add, false);
-                    // cache_mask.index_put_({nids_to_add_view}, true);
 
                     // cache_mutex.unlock();
                 }

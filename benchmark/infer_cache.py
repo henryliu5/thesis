@@ -76,6 +76,9 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
             del out_deg
             feat_server.set_static_cache(indices, ['feat'])
             k = 2000
+            # if name == 'ogbn-papers100M':
+            #     k = 20000
+
             processed = 0
 
             print('Caching', indices.shape[0], 'nodes')
@@ -194,6 +197,7 @@ if __name__ == '__main__':
     if use_gpu_sampling:
         # names = ['reddit', 'cora', 'ogbn-products']
         names = ['ogbn-products']
+        # names = ['ogbn-papers100M']
         batch_sizes = [256]
     else:
         # names = ['ogbn-products', 'ogbn-papers100M']
