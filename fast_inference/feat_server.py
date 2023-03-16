@@ -209,7 +209,7 @@ class LFUServer(FeatureServer):
 
     def init_counts(self, num_total_nodes):
         self.num_total_nodes = num_total_nodes
-        self.counts = torch.zeros(num_total_nodes)
+        self.counts = torch.zeros(num_total_nodes, device=self.device)
 
     def update_cache(self, *args):
         torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
@@ -223,7 +223,7 @@ class LFUServer(FeatureServer):
             node_ids (torch.Tensor): A 1-D tensor of node IDs.
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
-        node_ids = node_ids.cpu()
+        cpu_node_ids = node_ids.cpu()
         with Timer('update counts'):
             self.counts[node_ids] += 1
 
@@ -246,9 +246,9 @@ class LFUServer(FeatureServer):
                     nids_to_add = nids_to_add[:cache_size]
 
                 count_of_cache_residents = self.counts[self.nid_is_on_gpu]
-                resident_mapping = torch.arange(self.nid_is_on_gpu.shape[0])[self.nid_is_on_gpu]
+                resident_mapping = torch.arange(self.nid_is_on_gpu.shape[0], device=self.device)[self.nid_is_on_gpu]
                 # Replace lowest count
-                _, replace_residents = torch.topk(count_of_cache_residents, k=nids_to_add.shape[0], largest=False, sorted=False)
+                _, replace_residents = torch.topk(count_of_cache_residents, k=nids_to_add.shape[0], largest=False, sorted=True)
                 replace_nids = resident_mapping[replace_residents]
 
                 cache_slots = self.cache_mapping[replace_nids]
@@ -657,16 +657,16 @@ class ManagedCacheServer(FeatureServer):
             self.topk_processed = False
 
     def update_cache(self, feats):
-        if self.topk_started:
-            # TODO figure out why this doesn't work when put by placing features in the queue
-            if not self.topk_processed:
-                torch.cuda.current_stream().wait_stream(self.topk_stream)
-                #!! This first line is kinda weird but goes here to allow
-                #!! self.most_common_nids to be computed async in self.topk_stream
-                self.is_cache_candidate[self.most_common_nids] = True
-                self.topk_processed = True
-
-        torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+        # if self.topk_started:
+        #     # TODO figure out why this doesn't work when put by placing features in the queue
+        #     if not self.topk_processed:
+        #         torch.cuda.current_stream().wait_stream(self.topk_stream)
+        #         #!! This first line is kinda weird but goes here to allow
+        #         #!! self.most_common_nids to be computed async in self.topk_stream
+        #         self.is_cache_candidate[self.most_common_nids] = True
+        #         self.topk_processed = True
+        pass
+        
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
         """Get features for a list of nodes.
@@ -749,13 +749,15 @@ class ManagedCacheServer(FeatureServer):
 
                 with Timer('cache update'):
                     if self.topk_started:
-                        # if not self.topk_processed:
-                        #     torch.cuda.current_stream().wait_stream(self.topk_stream)
-                        #     with torch.cuda.stream(self.update_stream):
-                        #         #!! This first line is kinda weird but goes here to allow
-                        #         #!! self.most_common_nids to be computed async in self.topk_stream
-                        #         self.is_cache_candidate[self.most_common_nids] = True
-                        #     self.topk_processed = True
+                        if not self.topk_processed:
+                            torch.cuda.current_stream().wait_stream(self.topk_stream)
+                            with torch.cuda.stream(self.update_stream):
+                                #!! This first line is kinda weird but goes here to allow
+                                #!! self.most_common_nids to be computed async in self.topk_stream
+                                self.is_cache_candidate[self.most_common_nids] = True
+                            self.topk_processed = True
+                            torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+                            torch.cuda.current_stream().wait_stream(self.update_stream)
 
                         # with Timer('place in queue'):
                         # !! WARNING: Must use "m" here!! Since the node ids and mask are on GPU, the CPU node id tensor

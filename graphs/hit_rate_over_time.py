@@ -36,15 +36,16 @@ def main(paths, policies, model_name, graph_name, batch_size, file_suffix = ''):
     plt.clf()
     
 if __name__ == '__main__':
-    cache_ratios = [0.2]#, 0.1]
+    cache_ratios = [0.2, 0.1]
     for c in cache_ratios:
         main([
             f'testing/gpu/pinned/uniform/static_{c}',
             f'testing/gpu/pinned/uniform/count_{c}',
             # f'fast_sampling/gpu/pinned/uniform/cpp_{c}', 
             f'testing/gpu/pinned/uniform/cpp_{c}', 
+            f'testing/gpu/pinned/uniform/lfu_{c}',
             ],
-            ['static', 'count', 'cpp'],
+            ['static', 'count', 'cpp', 'lfu'],
             # [f'Static {c*100}%', f'Full Frequency {c*100}%', f'Masked Frequency {c*100}%', 'test'],
             'GCN', 'ogbn-products', 256, f'c{c}')
         main([
@@ -56,7 +57,8 @@ if __name__ == '__main__':
             f'testing/gpu/pinned/bias_0.8/count_{c}',
             # f'fast_sampling/gpu/pinned/bias_0.8/cpp_{c}', 
             f'testing/gpu/pinned/bias_0.8/cpp_{c}', 
+            f'testing/gpu/pinned/bias_0.8/lfu_{c}',
             ],
-            ['static', 'count', 'cpp'],
+            ['static', 'count', 'cpp', 'lfu'],
             # [f'Static {c*100}%', f'Full Frequency {c*100}%', f'Masked Frequency {c*100}%', 'test'],
             'GCN', 'ogbn-products', 256, f'_biased_c{c}')
