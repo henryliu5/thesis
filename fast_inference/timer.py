@@ -15,7 +15,7 @@ def enable_timers():
     TRACE_ENABLED = True
 
 @contextmanager
-def Timer(name, track_cuda = True):
+def Timer(name, track_cuda = False):
     global TRACE_ENABLED
     if TRACE_ENABLED:
         with record_function(name):
