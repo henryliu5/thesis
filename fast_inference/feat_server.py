@@ -184,6 +184,7 @@ class CountingFeatServer(FeatureServer):
             self.nid_is_on_gpu.copy_(most_common_mask, non_blocking=True)
             self.cache_mapping[~most_common_mask] = -1
             torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
+        torch.cuda.current_stream().wait_stream(self.update_stream)
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
         """Get features for a list of nodes.

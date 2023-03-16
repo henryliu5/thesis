@@ -606,6 +606,9 @@ public:
             at::cuda::CUDAStream myStream = at::cuda::getStreamFromPool(false, 0);
             at::cuda::CUDAStreamGuard guard(myStream);
             pthread_setname_np(pthread_self(), "CacheManager smallWorker");
+
+            // auto cache_size_buf = torch::empty({cache_size}, torch::device(torch::kCPU).pinned_memory(true).dtype(torch::kLong));
+
             while (worker_alive) {
                 std::tuple<torch::Tensor, torch::Tensor> p;
                 if(gpu_q.wait_and_pop(p)){
@@ -625,7 +628,8 @@ public:
                     // Not actually pinend, won't be async
                     new_nids = new_nids.to(torch::device(torch::kCUDA), true);
 
-                    auto cache_mask_device = cache_mask.to(torch::device(torch::kCUDA), true);
+                    // auto cache_mask_device = cache_mask.to(torch::device(torch::kCUDA), true);
+                    auto cache_mask_device = cache_mapping >= 0;
                     // TODO check equivalent in python
                     auto new_nid_mask = cache_candidate_mask.index({new_nids});
                     auto nids_to_add = new_nids.index({new_nid_mask});
@@ -647,6 +651,11 @@ public:
                     // Blind write 0's into cache mask
                     cache_mask_device.index_put_({replace_nids}, false);
                     cache_mask.copy_(cache_mask_device, true);
+                    // cout << "replace_nid_view size: " << replace_nids.sizes() << " dtype: " << replace_nids.dtype() << " buf size: " << cache_size_buf.sizes() << " dtype " << cache_size_buf.dtype() << endl;
+                    // auto replace_nid_view = cache_size_buf.resize_(replace_nids.sizes());
+                    // replace_nid_view.copy_(replace_nids, false);
+                    // myStream.synchronize();
+                    // cache_mask.index_put_({replace_nid_view}, false);
 
                     // 2. Wait for enough threads to finish
                     long fetchers_at_start = started_threads.load();
@@ -663,7 +672,11 @@ public:
                     // Now write 1's
                     cache_mask_device.index_put_({nids_to_add}, true);
                     cache_mask.copy_(cache_mask_device, true);
-                    cache_mutex.unlock();
+                    // auto nids_to_add_view = cache_size_buf.resize_(nids_to_add.sizes());
+                    // nids_to_add_view.copy_(nids_to_add, false);
+                    // cache_mask.index_put_({nids_to_add_view}, true);
+
+                    // cache_mutex.unlock();
                 }
                 
             }

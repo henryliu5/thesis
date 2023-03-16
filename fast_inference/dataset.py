@@ -362,7 +362,7 @@ class InferenceDataset(DGLDataset):
         info_path = os.path.join(self.save_path, '_info.pkl')
         save_info(info_path, {'num_infer_targets': self._num_infer_targets,
                               'num_classes': self._num_classes,
-                              'orig_nid_partitions': None if type(self._orig_nid_partitions ) == type(None) else self._orig_nid_partitions})
+                              'orig_nid_partitions': None if not hasattr(self, '_orig_nid_partitions') else self._orig_nid_partitions})
 
     def load(self):
         # load processed data from directory `self.save_path`

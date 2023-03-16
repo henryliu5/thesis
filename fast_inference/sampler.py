@@ -77,7 +77,7 @@ class InferenceSampler:
             # with Timer('dgl sample neighbors'):
             if use_gpu_sampling:
                 # NOTE roughly 10x faster
-                assert (self.g.device != torch.device('cpu'))
+                assert (self.g.device != torch.device('cpu') or self.g.is_pinned())
                 frontier = dgl.sampling.sample_neighbors(sampling_graph, required_nodes_unique.to('cuda'), -1)
             else:
                 frontier = dgl.sampling.sample_neighbors(sampling_graph, required_nodes_unique, -1)

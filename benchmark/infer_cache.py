@@ -19,7 +19,7 @@ device = 'cuda'
 def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=1000, run_profiling=False, trials=1):
     BATCH_SIZE = batch_size
     enable_timers()
-    infer_data = InferenceDataset(name, 0.1, partitions=5, force_reload=False, verbose=True)
+    infer_data = InferenceDataset(name, 0.1 if name != 'ogbn-papers100M' else 0.01, partitions=5, force_reload=False, verbose=True)
 
     g = infer_data[0]
     in_size = g.ndata["feat"].shape[1]
@@ -39,7 +39,12 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         n = len(trace) // 10
 
     if use_gpu_sampling:
-        logical_g = logical_g.to(device)
+        if name == 'ogbn-papers100M':
+            logical_g.create_formats_()
+            logical_g.pin_memory_()
+            print('Testing ogbn-papers100M, pinning complete')
+        else:
+            logical_g = logical_g.to(device)
 
     for trial in range(trials):
         clear_timers()
