@@ -762,39 +762,45 @@ class ManagedCacheServer(FeatureServer):
                         # with Timer('place in queue'):
                         # !! WARNING: Must use "m" here!! Since the node ids and mask are on GPU, the CPU node id tensor
                         # !! must be fully materialized by the time the tensor is placed on the queue
+
                         self.cache_manager.place_feats_in_queue(cpu_feats, m)
-                            # cache_size = self.cache[feat].shape[0]
 
-                            # cache_mask_device = self.nid_is_on_gpu.to('cuda', non_blocking=True)
+                        # # Can comment in below and comment out above to use syncrhonous update (async in stream)
+                        # with torch.cuda.stream(self.update_stream):
+                        #     new_feats = cpu_feats
+                        #     new_nids = m
+                        #     new_nid_mask = self.is_cache_candidate[new_nids]
 
-                            # # with Timer('nid to add mask'):
-                            # cpu_mask = cpu_mask.to('cuda') 
-                            # nids_to_add_mask = cpu_mask & self.is_cache_candidate[gpu_nids]
-                            # nids_to_add = gpu_nids[nids_to_add_mask]
+                        #     nids_to_add = new_nids[new_nid_mask]
+                        #     new_feats = new_feats[new_nid_mask]
 
-                            # # with Timer('replace nid mask'):
-                            # # nids that are in cache and can be replaced in this epoch
-                            # replace_nid_mask = cache_mask_device & ~self.is_cache_candidate
+                        #     replace_nid_mask = self.nid_is_on_gpu & ~ self.is_cache_candidate
 
-                            # replace_nids = self.big_graph_arange[replace_nid_mask]
+                        #     replace_nids = replace_nid_mask.nonzero()
+                        #     replace_nids = replace_nids.reshape(replace_nids.shape[0])
 
-                            # # with Timer('truncate'):
-                            # num_to_add = min(replace_nids.shape[0], nids_to_add.shape[0], cache_size)
-                            # replace_nids = replace_nids[:num_to_add]
-                            # nids_to_add = nids_to_add[:num_to_add]
 
-                            # # with Timer('meta update'):
-                            # cache_mask_device[replace_nids] = False
-                            # cache_mask_device[nids_to_add] = True
-                            # self.nid_is_on_gpu.copy_(cache_mask_device, non_blocking=True)
-                            # cache_slots = self.cache_mapping[replace_nids]
-                            # self.cache_mapping[replace_nids] = -1
-                            # self.cache_mapping[nids_to_add] = cache_slots
+                        #         # # with Timer('truncate'):
+                        #     num_to_add = min(replace_nids.shape[0], nids_to_add.shape[0], self.cache_size)
+                        #     replace_nids = replace_nids[:num_to_add]
+                        #     nids_to_add = nids_to_add[:num_to_add]
 
-                            # old_shape = self.cache[feat].shape
-                            # # with Timer('actual move'):
-                            # # Recall the above truncation - the features we want will be at the front of the result tensor
-                            # self.cache[feat][cache_slots] = res[feat][cpu_mask][:num_to_add]
-                            # assert(self.cache[feat].shape == old_shape)
+                        #     self.nid_is_on_gpu[replace_nids] = False
+                        #         # # with Timer('meta update'):
+                        #         # cache_mask_device[replace_nids] = False
+                        #         # cache_mask_device[nids_to_add] = True
+                        #         # self.nid_is_on_gpu.copy_(cache_mask_device, non_blocking=True)
+                        #     cache_slots = self.cache_mapping[replace_nids]
+
+                        #     self.cache_mapping[replace_nids] = -1
+                        #     self.cache_mapping[nids_to_add] = cache_slots
+
+                        #     old_shape = self.cache[feat].shape
+                        #         # # with Timer('actual move'):
+                        #         # # Recall the above truncation - the features we want will be at the front of the result tensor
+                        #     self.cache[feat][cache_slots] = res[feat][cpu_mask][:num_to_add]
+                        #     assert(self.cache[feat].shape == old_shape)
+
+                        #     self.nid_is_on_gpu[nids_to_add] = True
 
         return res, mfgs
