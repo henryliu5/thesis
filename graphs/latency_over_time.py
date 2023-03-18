@@ -72,15 +72,15 @@ if __name__ == '__main__':
                 f'testing/gpu/{pin}bias_0.8/static_{c}',
                 f'testing/gpu/{pin}bias_0.8/count_{c}',
                 f'testing/gpu/{pin}bias_0.8/cpp_{c}',
-                f'testing/gpu/{pin}bias_0.8/lfu_{c}',
+                # f'testing/gpu/{pin}bias_0.8/lfu_{c}',
                 # f'testing/gpu/{pin}bias_0.8/hybrid_{c}',
-                ], 'GCN', 'ogbn-products', 256, f'_bias_{pin_stripped}c{c}')#['Baseline (no cache)', f'Static {c*100}%', f'Full Frequency {c*100}%', f'Masked Frequency {c*100}%'])
+                ], 'GCN', 'ogbn-products', 256, f'_bias_{pin_stripped}c{c}', [f'Static {c*100}%', f'Full Update (Frequency) {c*100}%', f'Incremental Update (Frequency) {c*100}%'])
 
             main([
                 #  f'testing/gpu/{pin}uniform/baseline',
                 f'testing/gpu/{pin}uniform/static_{c}',
                 f'testing/gpu/{pin}uniform/count_{c}',
                 f'testing/gpu/{pin}uniform/cpp_{c}',
-                f'testing/gpu/{pin}uniform/lfu_{c}',
+                # f'testing/gpu/{pin}uniform/lfu_{c}',
                 # f'testing/gpu/{pin}uniform/hybrid_{c}',
-                ], 'GCN', 'ogbn-products', 256, f'_uniform_{pin_stripped}c{c}') #['Baseline (no cache)', f'Static {c*100}%', f'Full Frequency {c*100}%', f'Masked Frequency {c*100}%'])
+                ], 'GCN', 'ogbn-products', 256, f'_uniform_{pin_stripped}c{c}', [f'Static {c*100}%', f'Full Update (Frequency) {c*100}%', f'Incremental Update (Frequency) {c*100}%'])

@@ -610,6 +610,10 @@ public:
             // auto cache_size_buf = torch::empty({cache_size}, torch::device(torch::kCPU).pinned_memory(true).dtype(torch::kLong));
 
             while (worker_alive) {
+                #ifndef NDEBUG
+                cout << "WARNING: cache update compiled in DEBUG mode" << endl;
+                #endif
+
                 std::tuple<torch::Tensor, torch::Tensor> p;
                 if(gpu_q.wait_and_pop(p)){
                     // TODO add setting to enable mutex or use atomics
@@ -630,23 +634,26 @@ public:
 
                     auto cache_mask_device = cache_mask;//.to(torch::device(torch::kCUDA), true);
                     // auto cache_mask_device = cache_mapping >= 0;
-
+                    ASSERT(std::get<0>(at::_unique(new_nids)).sizes() == new_nids.sizes(), "new nids must be unique");
                     ASSERT(new_nids.dtype() == torch::kLong, "new nids must be longs");
                     ASSERT(new_nids.max().item<long>() < cache_candidate_mask.sizes()[0], "Out of bounds, max: " << new_nids.max().item<long>() << " length " << cache_candidate_mask.sizes()[0]);
                     ASSERT(new_nids.min().item<long>() >= 0 && new_nids.max().item<long>() < cache_candidate_mask.sizes()[0], "new_nids out of bounds, min " << new_nids.min().item<long>() << " max, " << new_nids.max().item<long>() << " indexing into " << cache_candidate_mask.sizes()[0]);
 
                     auto new_nid_mask = cache_candidate_mask.index({new_nids});
+
+                    //!! This is necessary if operations are super racy... it is possible for the node ids given to be stale
+                    //!! maybe just want to throw this update away if this is the case
+                    new_nid_mask &= ~cache_mask_device.index({new_nids});
+
                     // TODO figure out "usefulness" threshold, can leave right after computing nids to add shape
                     auto nids_to_add = new_nids.index({new_nid_mask});
                     new_feats = new_feats.index({new_nid_mask});
 
-                    auto replace_nid_mask = cache_mask_device & ~cache_candidate_mask;
-
-                    // auto replace_nids = big_graph_arange.index({replace_nid_mask});
-                    // TODO consider replacing this by computing the reverse mapping, then can just do same op as above
-                    auto replace_nids = replace_nid_mask.nonzero();
-
-                    replace_nids = replace_nids.reshape({replace_nids.sizes()[0]});
+                    ASSERT((cache_mapping.index({nids_to_add}) < 0).all(0).item<bool>(), "Trying to add node to cache already present");
+                    ASSERT((cache_mapping.index({reverse_mapping}) >= 0).all(0).item<bool>(), "Reverse mapping invalid");
+                    auto replace_nid_mask = ~(cache_candidate_mask.index({reverse_mapping}));
+                    auto replace_nids = reverse_mapping.index({replace_nid_mask});
+                    ASSERT((cache_mapping.index({replace_nids}) >= 0).all(0).item<bool>(), "Replace nids invalid");
 
                     auto num_to_add = std::min(replace_nids.sizes()[0], std::min(nids_to_add.sizes()[0], (const long) cache_size));
 
@@ -670,11 +677,13 @@ public:
                     while (finished_threads.load() < fetchers_at_start && worker_alive)
                         ;
                     auto cache_slots = cache_mapping.index({replace_nids});
+                    ASSERT(cache_slots.min().item<long>() >= 0 && cache_slots.max().item<long>() < cache_size, "cache slots out of bounds, min " << cache_slots.min().item<long>() << " max " << cache_slots.max().item<long>());
 
                     cache_mapping.index_put_({replace_nids}, -1);
                     cache_mapping.index_put_({nids_to_add}, cache_slots);
-
-                    ASSERT(cache_slots.min().item<long>() >= 0 && cache_slots.max().item<long>() < cache_size, "cache slots out of bounds");
+                    reverse_mapping.index_put_({ cache_slots }, nids_to_add);
+                    ASSERT((cache_mapping.index({nids_to_add}) >= 0).all(0).item<bool>(), "Reverse mapping invalid");
+                    ASSERT((cache_mapping.index({reverse_mapping}) >= 0).all(0).item<bool>(), "Reverse mapping update invalid rev: " << reverse_mapping << " cache map[rev mapping] " << cache_mapping.index({reverse_mapping}));
 
                     cache.index_put_({cache_slots}, new_feats.slice(0, 0, num_to_add));
 

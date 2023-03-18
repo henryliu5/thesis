@@ -639,7 +639,7 @@ class ManagedCacheServer(FeatureServer):
         
             self.start_manager()
             self.cache_manager.set_cache(self.g.ndata[feat], self.nid_is_on_gpu, 
-                                        self.cache_mapping, self.reverse_mapping, self.cache[feat])
+                                        self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
             # TODO support more than 1 featuer type
             break
 
