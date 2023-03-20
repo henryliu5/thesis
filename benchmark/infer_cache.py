@@ -16,10 +16,24 @@ device = 'cuda'
 
 # TODO figure out how to enable inference mode and still make cpp cache server work
 @torch.inference_mode()
-def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=1000, run_profiling=False, trials=1):
+def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=5_000_000, run_profiling=False, trials=1):
     BATCH_SIZE = batch_size
     enable_timers()
-    infer_data = InferenceDataset(name, 0.1 if name != 'ogbn-papers100M' else 0.01, partitions=5, force_reload=False, verbose=True)
+
+    infer_percent = 0.1
+    if name == 'reddit' or name == 'ogbn-arxiv':
+        infer_percent = 0.4
+    elif name == 'cora':
+        infer_percent = 0.7
+    elif name == 'ogbn-papers100M':
+        infer_percent = 0.05
+        cache_percent /= 4
+
+        if subgraph_bias is not None:
+            print("Subgraph bias for ogbn-papers100M not supported")
+            return
+
+    infer_data = InferenceDataset(name, infer_percent, partitions=5, force_reload=False, verbose=True)
 
     g = infer_data[0]
     in_size = g.ndata["feat"].shape[1]
@@ -33,10 +47,13 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
     logical_g = dgl.graph(g.edges())
 
     print(logical_g)
-    trace = infer_data.create_inference_trace(subgraph_bias=subgraph_bias)
+    if name == 'ogbn-papers100M':
+        trace = infer_data.create_inference_trace(trace_len=1_000_000, subgraph_bias=subgraph_bias)
+    else:
+        trace = infer_data.create_inference_trace(subgraph_bias=subgraph_bias)
     n = len(trace)
-    if infer_data._orig_name == 'reddit':
-        n = len(trace) // 10
+    # if infer_data._orig_name == 'reddit':
+    #     n = len(trace) // 10
 
     if use_gpu_sampling:
         if name == 'ogbn-papers100M':
@@ -76,8 +93,8 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
             del out_deg
             feat_server.set_static_cache(indices, ['feat'])
             k = 2000
-            # if name == 'ogbn-papers100M':
-            #     k = 20000
+            if name == 'ogbn-papers100M':
+                k = 40000
 
             processed = 0
 
@@ -195,10 +212,13 @@ if __name__ == '__main__':
 
     use_gpu_sampling = True
     if use_gpu_sampling:
-        # names = ['reddit', 'cora', 'ogbn-products']
-        names = ['ogbn-products']
-        # names = ['ogbn-papers100M']
-        batch_sizes = [256]
+        names = ['reddit', 'cora', 'ogbn-products']
+        names = ['ogbn-papers100M']
+        names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
+        names = ['ogbn-papers100M']
+        # names = ['ogbn-arxiv']
+        batch_sizes = [32, 64, 128, 256, 512]
+        # batch_sizes = [256]
     else:
         # names = ['ogbn-products', 'ogbn-papers100M']
         names = ['ogbn-papers100M']
@@ -217,7 +237,7 @@ if __name__ == '__main__':
                         dir=None, 
                         use_gpu_sampling=use_gpu_sampling,
                         use_pinned_mem=args.use_pinned_mem,
-                        MAX_ITERS=100,
+                        MAX_ITERS=2000,
                         run_profiling=True,
                         trials=1)
                 else:
@@ -235,3 +255,5 @@ if __name__ == '__main__':
                 gc.collect()
                 gc.collect()
                 gc.collect()
+                import time
+                time.sleep(5)
