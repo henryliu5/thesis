@@ -43,13 +43,13 @@ def test_new_server_correctness():
     x_feats = torch.arange(n, dtype=torch.float).reshape(n, 1)
     g.ndata['x'] = x_feats
 
-    feat_server = CountingFeatServer(g, device=device, track_features=['x'])
-    feat_server.set_static_cache(node_ids=torch.arange(int(n * 0.8), dtype=torch.long), feats=['x'])
+    feat_server = ManagedCacheServer(g, device=device, track_features=['x'])
+    feat_server.set_static_cache(node_ids=torch.arange(int(n * 0.80), dtype=torch.long), feats=['x'])
     feat_server.init_counts(n)
 
     do_topk = 10
     for i in tqdm(range(5000)):
-        requested = torch.randint(0, n, (32,), device=device)
+        requested = torch.randint(0, n, (32,), device=device).unique()
 
         if i % do_topk == 0:
             feat_server.compute_topk()

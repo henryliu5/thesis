@@ -647,6 +647,12 @@ public:
 
                     // TODO figure out "usefulness" threshold, can leave right after computing nids to add shape
                     auto nids_to_add = new_nids.index({new_nid_mask});
+
+                    const float THRESHOLD = 0.01;
+                    if((float) nids_to_add.sizes()[0] / (float) cache_size <= THRESHOLD){
+                        continue;
+                    }
+
                     new_feats = new_feats.index({new_nid_mask});
 
                     ASSERT((cache_mapping.index({nids_to_add}) < 0).all(0).item<bool>(), "Trying to add node to cache already present");
