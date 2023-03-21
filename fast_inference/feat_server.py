@@ -1,11 +1,13 @@
 import torch
 import dgl
-from typing import List, Optional
+from typing import List, Optional, Dict
 from fast_inference.timer import Timer, export_dict_as_pd
 from fast_inference_cpp import CacheManager
 
 class FeatureServer:
-    def __init__(self, g: dgl.DGLGraph, 
+    def __init__(self, 
+                 num_nodes: int,
+                 features: Dict[str, torch.Tensor], 
                  device: torch.device or str,
                  track_features: List[str],
                  use_pinned_mem: bool = True,
@@ -17,13 +19,14 @@ class FeatureServer:
             g (dgl.DGLGraph): Graph whose features are to be served. Graph should be on CPU.
             device (torch.device): Device where feature server should store cache
         """
-        assert (g.device == torch.device('cpu'))
-        self.g = g
+        # assert (g.device == torch.device('cpu'))
+        self.features = features
+        self.num_nodes = num_nodes
         self.device = device
-        self.nid_is_on_gpu = torch.zeros(g.num_nodes(), dtype=torch.bool, device=self.device)
+        self.nid_is_on_gpu = torch.zeros(num_nodes, dtype=torch.bool, device=self.device)
         # TODO should this go on GPU?
         self.cache_mapping = - \
-            torch.ones(g.num_nodes(), device=self.device).long()
+            torch.ones(num_nodes, device=self.device).long()
         self.cache = {}
         self.use_pinned_mem = use_pinned_mem
         self.profile = profile_hit_rate
@@ -34,7 +37,7 @@ class FeatureServer:
         # NOTE allocate "small" pinned buffers to place features that will be transferred
         for feature in track_features:
             # TODO make these buffers work with features that are not 1D (see pytest test)
-            self.pinned_buf_dict[feature] = torch.empty((pinned_buf_size, g.ndata[feature].shape[1]), dtype=torch.float, pin_memory=True)
+            self.pinned_buf_dict[feature] = torch.empty((pinned_buf_size, features[feature].shape[1]), dtype=torch.float, pin_memory=True)
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
         """Get features for a list of nodes.
@@ -64,7 +67,7 @@ class FeatureServer:
                 self.profile_info['hit_rate'].append(cache_hits / node_ids.shape[0])
 
             for feat in feats:
-                feat_shape = list(self.g.ndata[feat].shape[1:])
+                feat_shape = list(self.features[feat].shape[1:])
                 with Timer('allocate res tensor', track_cuda = True):
                     # Create tensor with shape [number of nodes] x feature shape to hold result
                     res_tensor = torch.zeros(
@@ -83,10 +86,10 @@ class FeatureServer:
                 with Timer('feature gather'):
                     if self.use_pinned_mem:
                         # Places indices directly into pinned memory buffer
-                        torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
+                        torch.index_select(self.features[feat], 0, m, out=required_cpu_features)
                     else:
                         #"slow mode"
-                        required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
+                        required_cpu_features = torch.index_select(self.features[feat], 0, m)
 
                 with Timer('CPU-GPU copy', track_cuda=True):
                     # Copy CPU features
@@ -123,7 +126,7 @@ class FeatureServer:
             self.cache_size, device=self.device)
 
         for feat in feats:
-            self.cache[feat] = self.g.ndata[feat][node_ids].to(self.device)
+            self.cache[feat] = self.features[feat][node_ids].to(self.device)
 
     def export_profile(self, path, current_config):
         if self.profile:
@@ -180,7 +183,7 @@ class CountingFeatServer(FeatureServer):
 
             for feat in feats:
                 old_shape = self.cache[feat].shape
-                self.cache[feat][requires_update_cache_idx] = self.g.ndata[feat][requires_update_mask.cpu()].to(self.device)
+                self.cache[feat][requires_update_cache_idx] = self.features[feat][requires_update_mask.cpu()].to(self.device)
                 assert(self.cache[feat].shape == old_shape)
 
             self.cache_mapping[requires_update_mask] = requires_update_cache_idx
@@ -359,7 +362,7 @@ class HybridServer(FeatureServer):
                 self.profile_info['hit_rate'].append(cache_hits / node_ids.shape[0])
 
             for feat in feats:
-                feat_shape = list(self.g.ndata[feat].shape[1:])
+                feat_shape = list(self.features[feat].shape[1:])
                 with Timer('allocate res tensor', track_cuda = True):
                     # Create tensor with shape [number of nodes] x feature shape to hold result
                     res_tensor = torch.zeros(
@@ -377,10 +380,10 @@ class HybridServer(FeatureServer):
                 with Timer('feature gather'):
                     if self.use_pinned_mem:
                         # Places indices directly into pinned memory buffer
-                        torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
+                        torch.index_select(self.features[feat], 0, m, out=required_cpu_features)
                     else:
                         #"slow mode"
-                        required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
+                        required_cpu_features = torch.index_select(self.features[feat], 0, m)
 
                 with Timer('CPU-GPU copy', track_cuda=True):
                     # Need to get small copies out of the way so computations can be done async
@@ -504,10 +507,10 @@ class HybridServer(FeatureServer):
 
 #         self.reverse_mapping = node_ids
 #         for feat in feats:
-#             self.cache[feat] = self.g.ndata[feat][node_ids].to(self.device)
+#             self.cache[feat] = self.features[feat][node_ids].to(self.device)
         
 #             self.start_manager(staging_area_size)
-#             self.cache_manager.set_cache(self.g.ndata[feat], self.nid_is_on_gpu, 
+#             self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, 
 #                                         self.cache_mapping, self.reverse_mapping, self.cache[feat])
 #             # TODO support more than 1 featuer type
 #             break
@@ -545,7 +548,7 @@ class HybridServer(FeatureServer):
 #                 self.profile_info['hit_rate'].append(cache_hits / node_ids.shape[0])
 
 #             for feat in feats:
-#                 feat_shape = list(self.g.ndata[feat].shape[1:])
+#                 feat_shape = list(self.features[feat].shape[1:])
 #                 with Timer('allocate res tensor', track_cuda = True):
 #                     # Create tensor with shape [number of nodes] x feature shape to hold result
 #                     res_tensor = torch.zeros(
@@ -564,10 +567,10 @@ class HybridServer(FeatureServer):
 #                 with Timer('feature gather'):
 #                     if self.use_pinned_mem:
 #                         # Places indices directly into pinned memory buffer
-#                         torch.index_select(self.g.ndata[feat], 0, m, out=required_cpu_features)
+#                         torch.index_select(self.features[feat], 0, m, out=required_cpu_features)
 #                     else:
 #                         #"slow mode"
-#                         required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m)
+#                         required_cpu_features = torch.index_select(self.features[feat], 0, m)
 
 #                 with Timer('CPU-GPU copy', track_cuda=True):
 #                     # Copy CPU features
@@ -615,7 +618,7 @@ class ManagedCacheServer(FeatureServer):
 
 
     def start_manager(self):
-        self.num_total_nodes = self.g.num_nodes()
+        self.num_total_nodes = self.num_nodes
         self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, -1, -1, 0, True)
 
 
@@ -635,10 +638,10 @@ class ManagedCacheServer(FeatureServer):
 
         self.reverse_mapping = node_ids
         for feat in feats:
-            self.cache[feat] = self.g.ndata[feat][node_ids].to(self.device)
+            self.cache[feat] = self.features[feat][node_ids].to(self.device)
         
             self.start_manager()
-            self.cache_manager.set_cache(self.g.ndata[feat], self.nid_is_on_gpu, 
+            self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, 
                                         self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
             # TODO support more than 1 featuer type
             break
@@ -702,7 +705,7 @@ class ManagedCacheServer(FeatureServer):
                 self.profile_info['hit_rate'].append(cache_hits / node_ids.shape[0])
 
             for feat in feats:
-                feat_shape = list(self.g.ndata[feat].shape[1:])
+                feat_shape = list(self.features[feat].shape[1:])
                 with Timer('allocate res tensor', track_cuda = True):
                     # Create tensor with shape [number of nodes] x feature shape to hold result
                     res_tensor = torch.zeros(
@@ -721,10 +724,10 @@ class ManagedCacheServer(FeatureServer):
                 with Timer('feature gather'):
                     if self.use_pinned_mem:
                         # Places indices directly into pinned memory buffer
-                        torch.index_select(self.g.ndata[feat], 0, m.cpu(), out=required_cpu_features)
+                        torch.index_select(self.features[feat], 0, m.cpu(), out=required_cpu_features)
                     else:
                         #"slow mode"
-                        required_cpu_features = torch.index_select(self.g.ndata[feat], 0, m.cpu())
+                        required_cpu_features = torch.index_select(self.features[feat], 0, m.cpu())
 
                 with Timer('CPU-GPU copy', track_cuda=True):
                     # Copy CPU features

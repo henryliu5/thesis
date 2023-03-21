@@ -68,17 +68,18 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         # Set up feature server
         cache_type = cache_type or 'baseline'
         if cache_type == 'static':
-            feat_server = FeatureServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            print(g.ndata)
+            feat_server = FeatureServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'count':
-            feat_server = CountingFeatServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = CountingFeatServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'lfu':
-            feat_server = LFUServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = LFUServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'hybrid' or cache_type == 'async':
-            feat_server = HybridServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = HybridServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'baseline':
             feat_server = None
         elif cache_type == 'cpp':
-            feat_server = ManagedCacheServer(g, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         else:
             print('Cache type', cache_type, 'not supported')
             exit()
@@ -215,10 +216,10 @@ if __name__ == '__main__':
         names = ['reddit', 'cora', 'ogbn-products']
         names = ['ogbn-papers100M']
         names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
-        names = ['ogbn-papers100M']
-        # names = ['ogbn-arxiv']
-        batch_sizes = [32, 64, 128, 256, 512]
-        # batch_sizes = [256]
+        # names = ['ogbn-papers100M']
+        names = ['ogbn-products']
+        # batch_sizes = [32, 64, 128, 256, 512]
+        batch_sizes = [256]
     else:
         # names = ['ogbn-products', 'ogbn-papers100M']
         names = ['ogbn-papers100M']

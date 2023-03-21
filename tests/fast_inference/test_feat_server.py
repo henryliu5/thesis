@@ -14,7 +14,7 @@ def test_feat_server():
     g.ndata['y'] = y_feats
 
     assert (g.device == torch.device('cpu'))
-    server = FeatureServer(g, track_features=['x', 'y'], device=device)
+    server = FeatureServer(g.num_nodes(), g.ndata, track_features=['x', 'y'], device=device)
 
     # Set the cache to be nodes 0, 2, 4
     server.set_static_cache(node_ids=torch.LongTensor([0, 2, 4]), feats=['x', 'y'])
@@ -43,7 +43,7 @@ def test_new_server_correctness():
     x_feats = torch.arange(n, dtype=torch.float).reshape(n, 1)
     g.ndata['x'] = x_feats
 
-    feat_server = ManagedCacheServer(g, device=device, track_features=['x'])
+    feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, device=device, track_features=['x'])
     feat_server.set_static_cache(node_ids=torch.arange(int(n * 0.80), dtype=torch.long), feats=['x'])
     feat_server.init_counts(n)
 
