@@ -3,6 +3,7 @@ import dgl
 from typing import List, Optional, Dict
 from fast_inference.timer import Timer, export_dict_as_pd
 from fast_inference_cpp import CacheManager
+import time
 
 class FeatureServer:
     def __init__(self, 
@@ -12,7 +13,8 @@ class FeatureServer:
                  track_features: List[str],
                  use_pinned_mem: bool = True,
                  profile_hit_rate: bool = False,
-                 pinned_buf_size: int = 150_000):
+                 pinned_buf_size: int = 150_000,
+                 peer_lock = None):
         """ Initializes a new FeatureServer
 
         Args:
@@ -41,10 +43,55 @@ class FeatureServer:
             self.pinned_buf_dict[feature] = torch.empty((pinned_buf_size, features[feature].shape[1]), dtype=torch.float, pin_memory=True)
 
         self.peers = None
+        self.peer_streams = None
+        self.peer_lock = peer_lock
+        self.lock_conflicts = 0
 
     def set_peer_group(self, peers):
         self.peers = peers
         print('Setting peers for FeatureStore', self.device_index, self.peers)
+
+    def get_peer_features(self, node_ids: torch.LongTensor, feat: str):
+        if self.peer_streams is None:
+            self.peer_streams = [torch.cuda.Stream(device=peer.device) for peer in self.peers]
+
+        assert(node_ids.device == self.device)
+        if self.peers is None:
+            return
+        
+        result_masks = []
+        result_features = []
+        # Check which nodes are on GPUs
+        gpu_nids = node_ids[self.nid_is_on_gpu[node_ids]]
+
+        s = time.perf_counter()
+        self.peer_lock.acquire()
+        dur = time.perf_counter() - s
+        if dur > 0.0005:
+            print('Waited for lock', dur)
+            self.lock_conflicts += 1
+        # time.sleep(0.004)
+
+        num_peers = len(self.peers)
+        for i in range(num_peers):
+            peer = self.peers[i]
+            # Only transfer node ids that belong to that GPU
+            # peer_mask = gpu_nids % num_peers == i
+            peer_mask = torch.ones(gpu_nids.shape, dtype=torch.bool, device=self.device)
+            peer_nids = gpu_nids[peer_mask].to(peer.device)
+            torch.cuda.current_stream().synchronize() # Must explicitly wait for nids to reach peer
+
+            with torch.cuda.stream(self.peer_streams[i]):
+                mapping = peer.cache_mapping[peer_nids]
+                # assert(torch.all(mapping >= 0))
+                result_features.append(peer.cache[feat][mapping].to(self.device))
+
+            result_masks.append(peer_mask)
+        
+        [stream.synchronize() for stream in self.peer_streams]
+
+        self.peer_lock.release()
+        return result_masks, result_features
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
         """Get features for a list of nodes.
@@ -61,6 +108,9 @@ class FeatureServer:
 
         with Timer('get_features()'):
             res = {}
+
+            with Timer('get peer features'):
+                self.get_peer_features(node_ids, feats[0])
 
             # Used to mask this particular request - not to mask the cache!!
             with Timer('compute gpu/cpu mask'):

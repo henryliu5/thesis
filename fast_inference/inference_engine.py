@@ -6,6 +6,7 @@ from fast_inference.sampler import InferenceSampler
 from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info
 from torch.profiler import profile, record_function, ProfilerActivity
 from contextlib import nullcontext
+import time
 
 class InferenceEngine(Process):
     def __init__(self, request_queue: Queue,
@@ -68,6 +69,9 @@ class InferenceEngine(Process):
                                 inputs = inputs['feat']
                             
                             with Timer('model'):
+                                self.feature_store.peer_lock.acquire()
+                                time.sleep(0.001)
+                                self.feature_store.peer_lock.release()
                                 x = self.model(mfgs, inputs)
                                 x.cpu()
 
@@ -82,6 +86,7 @@ class InferenceEngine(Process):
             prof.export_chrome_trace(f'multiprocess_trace_rank_{self.device_id}.json')
 
         print_timer_info()
+        print(f"Engine {self.device_id}: {self.feature_store.lock_conflicts} lock conflicts")
         self.finish_barrier.wait()
 
 

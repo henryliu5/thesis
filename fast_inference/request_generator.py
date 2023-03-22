@@ -118,7 +118,7 @@ class ResponseRecipient(Process):
                 TRACES['total'].append(time.perf_counter() - resp.start_time)
                 TRACES['id'].append(resp.id)
 
-                print('got resp for', resp.id, 'in', time.perf_counter() - resp.start_time)
+                # print('got resp for', resp.id, 'in', time.perf_counter() - resp.start_time)
             elif resp.req_type == RequestType.SHUTDOWN:
                 print('ResponseRecipient received shutdown')
                 break

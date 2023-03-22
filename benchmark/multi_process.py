@@ -12,7 +12,7 @@ from tqdm import tqdm
 from torch.profiler import profile, record_function, ProfilerActivity
 import time
 
-from torch.multiprocessing import Queue, Process, Barrier, set_start_method
+from torch.multiprocessing import Queue, Process, Barrier, set_start_method, Lock
 try:
     set_start_method('spawn')
 except RuntimeError:
@@ -270,7 +270,7 @@ if __name__ == '__main__':
     trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
 
     request_generator = RequestGenerator(request_queue=request_queue, start_barrier=start_barrier, finish_barrier=finish_barrier,
-                                        trace=trace, batch_size=batch_size, max_iters=max_iters, rate=50, trials=1)
+                                        trace=trace, batch_size=batch_size, max_iters=max_iters, rate=100, trials=1)
     request_generator.start()
     response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier, finish_barrier=finish_barrier)
     response_recipient.start()
@@ -289,11 +289,12 @@ if __name__ == '__main__':
     _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=True)
     del out_deg
 
+    peer_lock = Lock()
     # Build list of feature stores
     feature_stores = []
     for device_id in range(num_engines):
-        f = ManagedCacheServer(num_nodes, feats, torch.device(
-            'cuda', device_id), ['feat'], use_pinned_mem=True, profile_hit_rate=True, pinned_buf_size=1_000_000)
+        f = FeatureServer(num_nodes, feats, torch.device(
+            'cuda', device_id), ['feat'], use_pinned_mem=True, profile_hit_rate=True, pinned_buf_size=1_000_000, peer_lock=peer_lock)
         f.set_static_cache(indices, ['feat'])
         feature_stores.append(f)
 
