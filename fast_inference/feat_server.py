@@ -147,7 +147,11 @@ class FeatureServer:
     def update_cache(self, *args):
         pass
 
+    def compute_topk(self, *args):
+        pass
+
 class CountingFeatServer(FeatureServer):
+    # TODO tidy this up, no need to num total nodes again here
     def init_counts(self, num_total_nodes):
         self.num_total_nodes = num_total_nodes
         self.counts = torch.zeros(num_total_nodes, dtype=torch.long, device=self.device)
@@ -294,7 +298,7 @@ class ManagedCacheServer(FeatureServer):
         self.big_graph_arange = torch.arange(num_total_nodes, device=self.device)
 
 
-    def start_manager(self):
+    def _start_manager(self):
         self.num_total_nodes = self.num_nodes
         self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, -1, -1, 0, True)
 
@@ -316,11 +320,15 @@ class ManagedCacheServer(FeatureServer):
         self.reverse_mapping = node_ids
         for feat in feats:
             self.cache[feat] = self.features[feat][node_ids].to(self.device)
-        
-            self.start_manager()
+
+            # TODO support more than 1 featuer type
+            break
+
+    def start_manager(self):
+        for feat in self.features:
+            self._start_manager()
             self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, 
                                         self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
-            # TODO support more than 1 featuer type
             break
 
     def compute_topk(self):

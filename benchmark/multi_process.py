@@ -235,9 +235,6 @@ class CUDATest(Process):
 
 
 if __name__ == '__main__':
-    torch.set_num_threads(1)
-    num_engines = torch.cuda.device_count()
-    # num_engines = 1
 
     dataset = 'ogbn-products'
     batch_size = 256
@@ -246,12 +243,6 @@ if __name__ == '__main__':
     model_name = 'gcn'
     subgraph_bias = None
     cache_percent = 0.2
-
-    request_queue = Queue()
-    response_queue = Queue()
-    # # Request generator + Inference Engines + Response recipient
-    start_barrier = Barrier(2 + num_engines)
-    finish_barrier = Barrier(2 + num_engines)
 
     infer_data = InferenceDataset(
         dataset, infer_percent, partitions=5, force_reload=False, verbose=True)
@@ -267,18 +258,23 @@ if __name__ == '__main__':
     torch.cat([edge["in"] for edge in trace.edges], out=out_edge_endpoints)
     print('Creating fast edges done in', time.time() - s)
 
+    torch.set_num_threads(1)
+    num_engines = torch.cuda.device_count()
+
+    request_queue = Queue()
+    response_queue = Queue()
+    # # Request generator + Inference Engines + Response recipient
+    start_barrier = Barrier(2 + num_engines)
+    finish_barrier = Barrier(2 + num_engines)
+
     trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
 
     request_generator = RequestGenerator(request_queue=request_queue, start_barrier=start_barrier, finish_barrier=finish_barrier,
-                                         trace=trace, batch_size=batch_size, max_iters=max_iters, rate=50, trials=1)
+                                        trace=trace, batch_size=batch_size, max_iters=max_iters, rate=50, trials=1)
     request_generator.start()
-    response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier)
+    response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier, finish_barrier=finish_barrier)
     response_recipient.start()
 
-    # start_barrier = Barrier(num_engines)
-
-    # infer_data = InferenceDataset(
-    #     dataset, infer_percent, partitions=5, force_reload=False, verbose=True)
     g = infer_data[0]
     # Model goes on DEVICE
     in_size = g.ndata["feat"].shape[1]
@@ -296,7 +292,7 @@ if __name__ == '__main__':
     # Build list of feature stores
     feature_stores = []
     for device_id in range(num_engines):
-        f = FeatureServer(num_nodes, feats, torch.device(
+        f = ManagedCacheServer(num_nodes, feats, torch.device(
             'cuda', device_id), ['feat'], use_pinned_mem=True, profile_hit_rate=True, pinned_buf_size=1_000_000)
         f.set_static_cache(indices, ['feat'])
         feature_stores.append(f)
@@ -313,12 +309,13 @@ if __name__ == '__main__':
         # engines[-1].start()
         print('Creating InferenceEngine for device_id:', device_id)
         engine = InferenceEngine(request_queue=request_queue,
-                                 response_queue=response_queue,
-                                 start_barrier=start_barrier,
-                                 device=torch.device('cuda', device_id),
-                                 feature_store=feature_stores[device_id],
-                                 logical_g = logical_g,
-                                 model=model)
+                                response_queue=response_queue,
+                                start_barrier=start_barrier,
+                                finish_barrier=finish_barrier,
+                                device=torch.device('cuda', device_id),
+                                feature_store=feature_stores[device_id],
+                                logical_g = logical_g,
+                                model=model)
         engine.start()
         engines.append(engine)
 
@@ -326,40 +323,6 @@ if __name__ == '__main__':
     # engines[1].decr()
 
     [engine.join() for engine in engines]
-    # request_generator.join()
-    # response_recipient.join()
+    request_generator.join()
+    response_recipient.join()
     print('main exiting')
-
-    # for model in models:
-    #     for name in names:
-    #         for batch_size in batch_sizes:
-    #             if args.profile:
-    #                 main(name=name,
-    #                     model_name=model,
-    #                     batch_size=batch_size,
-    #                     cache_type=args.cache,
-    #                     subgraph_bias=args.subgraph_bias,
-    #                     cache_percent=args.cache_percent,
-    #                     dir=None,
-    #                     use_gpu_sampling=use_gpu_sampling,
-    #                     use_pinned_mem=args.use_pinned_mem,
-    #                     MAX_ITERS=2000,
-    #                     run_profiling=True,
-    #                     trials=1)
-    #             else:
-    #                 main(name=name,
-    #                     model_name=model,
-    #                     batch_size=batch_size,
-    #                     cache_type=args.cache,
-    #                     subgraph_bias=args.subgraph_bias,
-    #                     cache_percent=args.cache_percent,
-    #                     dir=args.output_path,
-    #                     use_gpu_sampling=use_gpu_sampling,
-    #                     use_pinned_mem=args.use_pinned_mem,
-    #                     trials=args.trials)
-    #             # main(name=name, model_name=model, batch_size=batch_size, dir='benchmark/data/new_cache_gpu_hybrid', use_gpu_sampling=use_gpu_sampling)
-    #             gc.collect()
-    #             gc.collect()
-    #             gc.collect()
-    #             import time
-    #             time.sleep(5)

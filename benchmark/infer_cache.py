@@ -93,6 +93,10 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
             _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=True)
             del out_deg
             feat_server.set_static_cache(indices, ['feat'])
+
+            if cache_type == 'cpp':
+                feat_server.start_manager()
+
             k = 2000
             if name == 'ogbn-papers100M':
                 k = 40000
