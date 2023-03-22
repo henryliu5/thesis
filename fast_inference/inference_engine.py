@@ -58,8 +58,7 @@ class InferenceEngine(Process):
                         self.feature_store.compute_topk()
                         self.feature_store.update_cache(['feat'])
 
-                    # print(req.nids.is_shared())
-                    if req.req_type == RequestType.INFERENCE:
+                    if req.req_type == RequestType.INFERENCE or req.req_type == RequestType.WARMUP:
                         with Timer('exec request'):
                             mfgs = self.sampler.sample(req.nids, req.edges, use_gpu_sampling=True, device=self.device)
 
@@ -74,7 +73,8 @@ class InferenceEngine(Process):
 
                     requests_handled += 1
 
-                    self.response_queue.put(Request(None, None, None, req.id, req.trial, RequestType.RESPONSE if req.req_type == RequestType.INFERENCE else req.req_type, req.start_time))
+                    if req.req_type != RequestType.WARMUP:
+                        self.response_queue.put(Request(None, None, None, req.id, req.trial, RequestType.RESPONSE if req.req_type == RequestType.INFERENCE else req.req_type, req.start_time))
                     if req.req_type == RequestType.SHUTDOWN:
                         print(f'InferenceEngine {self.device_id} received shutdown request, id: {req.id}')
                         break

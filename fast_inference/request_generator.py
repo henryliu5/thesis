@@ -1,7 +1,7 @@
 import torch
 from torch.multiprocessing import Process, Queue, Barrier
 from fast_inference.dataset import InferenceTrace
-from fast_inference.timer import Timer, enable_timers, clear_timers
+from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info
 from typing import List, Dict
 from dataclasses import dataclass
 from enum import Enum
@@ -14,6 +14,7 @@ class RequestType(Enum):
     RESET = 2
     SHUTDOWN = 3
     RESPONSE = 4
+    WARMUP = 5
 
 @dataclass(frozen=True)
 class Request:
@@ -65,7 +66,7 @@ class RequestGenerator(Process):
                 features = self.trace.features[i:i+self.batch_size]
                 edges = self.trace.edges.get_batch(i, i + self.batch_size)
 
-                req = Request(nids, features, edges, i, None, RequestType.INFERENCE, time.perf_counter())
+                req = Request(nids, features, edges, i, None, RequestType.WARMUP, time.perf_counter())
                 self.request_queue.put(req)
         time.sleep(2)
         
@@ -122,6 +123,7 @@ class ResponseRecipient(Process):
                 print('ResponseRecipient received shutdown')
                 break
 
+        print_timer_info()
         self.finish_barrier.wait()
 
 
