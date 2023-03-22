@@ -16,7 +16,39 @@ import time
 import gc
 import blosc2
 
-@dataclass(frozen=True)
+@dataclass
+class FastEdgeRepr:
+    """ Sharing multiple tensors in shared memory is slow to read, this class provides an alternative """
+    in_edge_endpoints: th.Tensor # [127, 38, 12, 42]
+    in_edge_count: th.Tensor # [3, 1] - means first node in trace has neighbors [127, 38, 12], second has [42]
+
+    out_edge_endpoints: th.Tensor
+    out_edge_count: th.Tensor
+
+    def __post_init__(self):
+        assert(self.in_edge_count.sum() == self.in_edge_endpoints.shape[0]), f'Edge count has sum {self.in_edge_count.sum()}, but there are {self.in_edge_endpoints.shape[0]} edges'
+        assert(self.out_edge_count.sum() == self.out_edge_endpoints.shape[0])
+
+        assert(self.in_edge_count.shape[0] == self.out_edge_count.shape[0])
+
+    def get_batch(self, start_index, end_index):
+        # Only generate prefix sum if this is called
+        if not hasattr(self, 'in_prefix_sum'):
+            self.in_prefix_sum = self.in_edge_count.cumsum(dim=0)
+            self.out_prefix_sum = self.out_edge_count.cumsum(dim=0)
+        
+        in_start = 0 if start_index == 0 else self.in_prefix_sum[start_index - 1]
+        in_end = 0 if end_index == 0 else self.in_prefix_sum[end_index - 1]
+
+        out_start = 0 if start_index == 0 else self.out_prefix_sum[start_index - 1]
+        out_end = 0 if end_index == 0 else self.out_prefix_sum[end_index - 1]
+
+        return FastEdgeRepr(in_edge_endpoints=self.in_edge_endpoints[in_start:in_end],
+                            in_edge_count=self.in_edge_count[start_index:end_index],
+                            out_edge_endpoints=self.out_edge_endpoints[out_start:out_end],
+                            out_edge_count=self.out_edge_count[start_index:end_index])
+
+@dataclass
 class InferenceTrace:
     """ Tensor of node IDs representing to inference targets in the trace"""
     nids: th.Tensor

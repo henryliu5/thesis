@@ -1,7 +1,7 @@
 from fast_inference.dataset import InferenceDataset
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
-from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, HybridServer, ManagedCacheServer
+from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, ManagedCacheServer
 from fast_inference.sampler import InferenceSampler
 import dgl
 import torch
