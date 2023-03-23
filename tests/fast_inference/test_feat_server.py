@@ -46,6 +46,7 @@ def test_new_server_correctness():
     feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, device=device, track_features=['x'])
     feat_server.set_static_cache(node_ids=torch.arange(int(n * 0.80), dtype=torch.long), feats=['x'])
     feat_server.init_counts(n)
+    feat_server.start_manager()
 
     do_topk = 10
     for i in tqdm(range(5000)):

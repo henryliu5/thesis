@@ -1,4 +1,4 @@
-from fast_inference.dataset import InferenceDataset
+from fast_inference.dataset import InferenceDataset, FastEdgeRepr
 from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
 from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, ManagedCacheServer
@@ -11,8 +11,9 @@ import gc
 import argparse
 from contextlib import nullcontext
 import os
+import time
 
-device = 'cuda'
+device = torch.device('cuda', 0)
 
 # TODO figure out how to enable inference mode and still make cpp cache server work
 @torch.inference_mode()
@@ -63,23 +64,34 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         else:
             logical_g = logical_g.to(device)
 
+    # TODO remove this and just generate traces with fast mode
+    s = time.time()
+    in_edge_count = torch.tensor([edge["in"].shape[0] for edge in trace.edges])
+    in_edge_endpoints = torch.empty(in_edge_count.sum(), dtype=torch.int64, pin_memory=True)
+    torch.cat([edge["in"] for edge in trace.edges], out=in_edge_endpoints)
+
+    out_edge_count = torch.tensor([edge["in"].shape[0] for edge in trace.edges])
+    out_edge_endpoints = torch.empty(out_edge_count.sum(), dtype=torch.int64, pin_memory=True)
+    torch.cat([edge["in"] for edge in trace.edges], out=out_edge_endpoints)
+    print('Creating fast edges done in', time.time() - s)
+    trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
+
     for trial in range(trials):
         clear_timers()
         # Set up feature server
         cache_type = cache_type or 'baseline'
         if cache_type == 'static':
-            print(g.ndata)
-            feat_server = FeatureServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = FeatureServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'count':
-            feat_server = CountingFeatServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = CountingFeatServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'lfu':
-            feat_server = LFUServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = LFUServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'hybrid' or cache_type == 'async':
-            feat_server = HybridServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = HybridServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'baseline':
             feat_server = None
         elif cache_type == 'cpp':
-            feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, 'cuda', ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         else:
             print('Cache type', cache_type, 'not supported')
             exit()
@@ -123,7 +135,7 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
                     # TODO make MFG setup work with any batch size and number of layers
                     # TODO see if this MFG setup can be done faster
                     # TODO see GW FastToBlock https://github.com/gwsshs22/dgl/blob/infer-main/src/inference/graph_api.cc
-                    mfgs = sampler.sample(trace.nids[i:i+BATCH_SIZE], trace.edges[i:i+BATCH_SIZE], use_gpu_sampling=use_gpu_sampling)
+                    mfgs = sampler.sample(trace.nids[i:i+BATCH_SIZE], trace.edges.get_batch(i, i+BATCH_SIZE), use_gpu_sampling=use_gpu_sampling)
 
                     with Timer(name="dataloading", track_cuda=True):
                         required_feats = mfgs[0].ndata['_ID']['_N']
