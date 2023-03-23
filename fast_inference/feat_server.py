@@ -64,20 +64,17 @@ class FeatureServer:
         # Check which nodes are on GPUs
         gpu_nids = node_ids[self.nid_is_on_gpu[node_ids]]
 
-        s = time.perf_counter()
-        self.peer_lock.acquire()
-        dur = time.perf_counter() - s
-        if dur > 0.0005:
-            print('Waited for lock', dur)
-            self.lock_conflicts += 1
-        # time.sleep(0.004)
-
+        dur = 0 
         num_peers = len(self.peers)
         for i in range(num_peers):
+            s = time.perf_counter()
+            self.peer_lock[i].acquire()
+            dur += time.perf_counter() - s
+
             peer = self.peers[i]
             # Only transfer node ids that belong to that GPU
-            # peer_mask = gpu_nids % num_peers == i
-            peer_mask = torch.ones(gpu_nids.shape, dtype=torch.bool, device=self.device)
+            peer_mask = gpu_nids % num_peers == i
+            # peer_mask = torch.ones(gpu_nids.shape, dtype=torch.bool, device=self.device)
             peer_nids = gpu_nids[peer_mask].to(peer.device)
             torch.cuda.current_stream().synchronize() # Must explicitly wait for nids to reach peer
 
@@ -87,10 +84,15 @@ class FeatureServer:
                 result_features.append(peer.cache[feat][mapping].to(self.device))
 
             result_masks.append(peer_mask)
-        
+
+            self.peer_lock[i].release()
+
         [stream.synchronize() for stream in self.peer_streams]
 
-        self.peer_lock.release()
+        if dur > 0.0005:
+            print('Waited for lock', dur)
+            self.lock_conflicts += 1
+
         return result_masks, result_features
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):

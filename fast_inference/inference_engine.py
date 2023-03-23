@@ -32,7 +32,8 @@ class InferenceEngine(Process):
         self.model = model.to(device)
 
     def run(self):
-        # torch.set_num_threads(16)
+        # TODO change to num cpu threads / num inference engine
+        torch.set_num_threads(16)
 
         # Need to re-pin the feature store buffer
         for k, v in self.feature_store.pinned_buf_dict.items():
@@ -69,9 +70,9 @@ class InferenceEngine(Process):
                                 inputs = inputs['feat']
                             
                             with Timer('model'):
-                                self.feature_store.peer_lock.acquire()
+                                self.feature_store.peer_lock[self.device_id].acquire()
                                 time.sleep(0.001)
-                                self.feature_store.peer_lock.release()
+                                self.feature_store.peer_lock[self.device_id].release()
                                 x = self.model(mfgs, inputs)
                                 x.cpu()
 

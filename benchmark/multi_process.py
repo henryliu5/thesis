@@ -260,8 +260,9 @@ if __name__ == '__main__':
 
     torch.set_num_threads(1)
     num_engines = torch.cuda.device_count()
+    # num_engines = 1
 
-    request_queue = Queue()
+    request_queue = Queue(4)
     response_queue = Queue()
     # # Request generator + Inference Engines + Response recipient
     start_barrier = Barrier(2 + num_engines)
@@ -270,7 +271,7 @@ if __name__ == '__main__':
     trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
 
     request_generator = RequestGenerator(request_queue=request_queue, start_barrier=start_barrier, finish_barrier=finish_barrier,
-                                        trace=trace, batch_size=batch_size, max_iters=max_iters, rate=100, trials=1)
+                                        trace=trace, batch_size=batch_size, max_iters=max_iters, rate=0, trials=1)
     request_generator.start()
     response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier, finish_barrier=finish_barrier)
     response_recipient.start()
@@ -289,7 +290,8 @@ if __name__ == '__main__':
     _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=True)
     del out_deg
 
-    peer_lock = Lock()
+    peer_lock = [Lock() for _ in range(num_engines)]
+    # peer_lock = Lock()
     # Build list of feature stores
     feature_stores = []
     for device_id in range(num_engines):

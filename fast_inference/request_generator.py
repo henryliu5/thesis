@@ -90,7 +90,7 @@ class RequestGenerator(Process):
             self.request_queue.put(Request(None, None, None, None, None, RequestType.RESET, None))
 
         # Need to have different shutdown mechanism
-        for i in range(10):
+        for i in range(4):
             self.request_queue.put(Request(None, None, None, None, None, RequestType.SHUTDOWN, None))
 
         self.finish_barrier.wait()
