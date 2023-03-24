@@ -4,6 +4,7 @@ from typing import List, Optional, Dict
 from fast_inference.timer import Timer, export_dict_as_pd
 from fast_inference_cpp import CacheManager
 import time
+import functools
 
 class FeatureServer:
     def __init__(self, 
@@ -53,7 +54,7 @@ class FeatureServer:
 
     def get_peer_features(self, node_ids: torch.LongTensor, feat: str):
         if self.peer_streams is None:
-            self.peer_streams = [torch.cuda.Stream(device=peer.device) for peer in self.peers]
+            self.peer_streams = [torch.cuda.Stream(device=self.device) for _ in self.peers]
 
         assert(node_ids.device == self.device), f'node ids {node_ids.device}, self.device {self.device}'
         if self.peers is None:
@@ -61,9 +62,6 @@ class FeatureServer:
         
         result_masks = []
         result_features = []
-        # Check which nodes are on GPUs
-        gpu_mask = self.nid_is_on_gpu[node_ids]
-        gpu_nids = node_ids[gpu_mask]
 
         dur = 0 
         num_peers = len(self.peers)
@@ -76,11 +74,14 @@ class FeatureServer:
                 dur += time.perf_counter() - s
 
                 # Only transfer node ids that belong to that GPU
-                peer_mask = gpu_mask & (node_ids % num_peers == i)
-                peer_nids = node_ids[peer_mask].to(peer.device)
+                # peer_mask = gpu_mask & (node_ids % num_peers == i)
+                #! TODO figure out a way to possibly not transfer all nids (makes masking weird because dim 0 is reduced)
+                node_ids_peer = node_ids.to(peer.device)
+                peer_mask = peer.nid_is_on_gpu[node_ids_peer]
+                peer_nids = node_ids_peer[peer_mask]
             else:
-                peer_mask = gpu_mask
-                peer_nids = gpu_nids
+                peer_mask = self.nid_is_on_gpu[node_ids]
+                peer_nids = node_ids[peer_mask]
 
             torch.cuda.current_stream().synchronize() # Must explicitly wait for nids to reach peer
 
@@ -88,6 +89,7 @@ class FeatureServer:
                 mapping = peer.cache_mapping[peer_nids]
                 # assert(torch.all(mapping >= 0))
                 result_features.append(peer.cache[feat][mapping].to(self.device))
+                peer_mask = peer_mask.to(self.device)
 
             result_masks.append(peer_mask)
 
@@ -124,7 +126,10 @@ class FeatureServer:
 
             # Used to mask this particular request - not to mask the cache!!
             with Timer('compute gpu/cpu mask'):
-                gpu_mask = self.nid_is_on_gpu[node_ids]
+                torch.cuda.current_stream().synchronize()
+                # gpu_mask = self.nid_is_on_gpu[node_ids]
+                gpu_mask = functools.reduce(torch.logical_or, peer_masks)
+                
                 cpu_mask = ~gpu_mask
 
             if self.profile:

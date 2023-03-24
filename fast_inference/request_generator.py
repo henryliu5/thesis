@@ -1,8 +1,8 @@
 import torch
 from torch.multiprocessing import Process, Queue, Barrier
 from fast_inference.dataset import InferenceTrace
-from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info
-from typing import List, Dict
+from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_timer_info
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
 from tqdm import tqdm
@@ -16,7 +16,7 @@ class RequestType(Enum):
     RESPONSE = 4
     WARMUP = 5
 
-@dataclass(frozen=True)
+@dataclass
 class Request:
     nids: torch.Tensor
     features: torch.Tensor
@@ -25,15 +25,20 @@ class Request:
     id: int
     trial: int
     req_type: RequestType
-    start_time: float
+    
+    time_generated: float
+    time_exec_started: Optional[float] = None
+    time_exec_finished: Optional[float] = None
 
 
 class RequestGenerator(Process):
-    def __init__(self, request_queue: Queue, start_barrier: Barrier, finish_barrier: Barrier, trace: InferenceTrace, batch_size: int, max_iters: int, rate: float, trials: int):
+    def __init__(self, request_queue: Queue, start_barrier: Barrier, finish_barrier: Barrier, trial_barriers: Barrier, num_engines: int, trace: InferenceTrace, batch_size: int, max_iters: int, rate: float, trials: int):
         super().__init__()
         self.request_queue = request_queue
         self.start_barrier = start_barrier
         self.finish_barrier = finish_barrier
+        self.trial_barriers = trial_barriers
+        self.num_engines = num_engines
 
         self.trace = trace
         self.batch_size = batch_size
@@ -87,10 +92,12 @@ class RequestGenerator(Process):
                     req = Request(nids, features, edges, i, trial, RequestType.INFERENCE, time.perf_counter())
                     self.request_queue.put(req)
 
-            self.request_queue.put(Request(None, None, None, None, None, RequestType.RESET, None))
+            for i in range(self.num_engines):
+                self.request_queue.put(Request(None, None, None, None, None, RequestType.RESET, None))
+            self.trial_barriers[trial].wait()
 
         # Need to have different shutdown mechanism
-        for i in range(4):
+        for i in range(self.num_engines):
             self.request_queue.put(Request(None, None, None, None, None, RequestType.SHUTDOWN, None))
 
         self.finish_barrier.wait()
@@ -98,32 +105,55 @@ class RequestGenerator(Process):
 from fast_inference.timer import TRACES
 
 class ResponseRecipient(Process):
-    def __init__(self, response_queue: Queue, start_barrier: Barrier, finish_barrier: Barrier):
+    def __init__(self, response_queue: Queue, start_barrier: Barrier, finish_barrier: Barrier, trial_barriers: Barrier, num_engines: int, dataset, model_name, batch_size, output_path):
         super().__init__()
         self.response_queue = response_queue
         self.start_barrier = start_barrier
         self.finish_barrier = finish_barrier
+        self.trial_barriers = trial_barriers
+        self.num_engines = num_engines
+
+        # Benchmarking info
+        self.dataset = dataset
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self.output_path = output_path
     
     def run(self):
         torch.set_num_threads(1)
         global TRACES
         TRACES['total'] = []
+        TRACES['total (received)'] = []
         TRACES['id'] = []
 
         print('Response recipient waiting')
         self.start_barrier.wait()
+        cur_trial = 0
+        num_resets = 0
         while True:
             resp = self.response_queue.get()
             if resp.req_type == RequestType.RESPONSE:
-                TRACES['total'].append(time.perf_counter() - resp.start_time)
+                time_received = time.perf_counter()
+                TRACES['total (received)'].append(time_received - resp.time_generated)
+                TRACES['total'].append(resp.time_exec_finished - resp.time_exec_started)
                 TRACES['id'].append(resp.id)
 
-                # print('got resp for', resp.id, 'in', time.perf_counter() - resp.start_time)
+                # print('got resp for', resp.id, 'in', time.perf_counter() - resp.time_generated)
+                assert(resp.trial == cur_trial)
             elif resp.req_type == RequestType.SHUTDOWN:
                 print('ResponseRecipient received shutdown')
                 break
-
-        print_timer_info()
+            elif resp.req_type == RequestType.RESET:
+                # Finished 1 trial, need to receive finish from all engines
+                num_resets += 1
+                if num_resets == self.num_engines:
+                    print_timer_info()
+                    export_timer_info(f'{self.output_path}/{self.model_name.upper()}', {'name': self.dataset, 'batch_size': self.batch_size, 'trial': cur_trial})
+                    self.trial_barriers[cur_trial].wait()
+                    cur_trial += 1
+                    num_resets = 0
+                    clear_timers()
+        
         self.finish_barrier.wait()
 
 

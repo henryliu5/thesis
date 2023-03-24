@@ -49,7 +49,8 @@ def Timer(name, track_cuda = False):
 
 def clear_timers():
     global TRACES
-    TRACES = {}
+    for k in TRACES.keys():
+        TRACES[k] = []
 
 def sync_timers():
     ''' Synchronize and capture cuda event timers '''
@@ -58,7 +59,9 @@ def sync_timers():
     for v in EVENT_CLOSURES.values():
         for f in v:
             f()
-    EVENT_CLOSURES = {}
+
+    for k in EVENT_CLOSURES.keys():
+        EVENT_CLOSURES[k] = []
 
 def print_timer_info(ignore_first_n = 2):
     ''' Print global timing info collected through Timer 
