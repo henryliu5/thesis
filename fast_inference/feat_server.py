@@ -43,6 +43,8 @@ class FeatureServer:
             # TODO make these buffers work with features that are not 1D (see pytest test)
             self.pinned_buf_dict[feature] = torch.empty((pinned_buf_size, features[feature].shape[1]), dtype=torch.float, pin_memory=True)
 
+        self.original_cache_indices = None
+
         self.peers = [self]
         self.peer_streams = None
         self.peer_lock = peer_lock
@@ -99,7 +101,7 @@ class FeatureServer:
         [stream.synchronize() for stream in self.peer_streams]
 
         if dur > 0.0005:
-            print('Waited for lock', dur)
+            # print('Waited for lock', dur)
             self.lock_conflicts += 1
 
         return result_masks, result_features
@@ -129,6 +131,10 @@ class FeatureServer:
                 torch.cuda.current_stream().synchronize()
                 # gpu_mask = self.nid_is_on_gpu[node_ids]
                 gpu_mask = functools.reduce(torch.logical_or, peer_masks)
+
+                if len(self.peers) > 1:
+                    # Verify isolation between GPU cachces
+                    assert(not torch.any(functools.reduce(torch.logical_and, peer_masks)))
                 
                 cpu_mask = ~gpu_mask
 
@@ -194,6 +200,10 @@ class FeatureServer:
             node_ids (torch.Tensor): Elements should be node ids whose features are to be cached in GPU memory.
             feats (List[str]): List of strings corresponding to feature keys that should be cached.
         """
+        # Used for resetting the cache between trials
+        if self.original_cache_indices is None:
+            self.original_cache_indices = node_ids
+
         self.cache_size = node_ids.shape[0]
         # Reset all
         self.nid_is_on_gpu[:] = False
@@ -219,17 +229,26 @@ class FeatureServer:
     def compute_topk(self, *args):
         pass
 
+    def reset_cache(self, *args):
+        for k in self.profile_info.keys():
+            self.profile_info[k] = []
+
 class CountingFeatServer(FeatureServer):
     # TODO tidy this up, no need to num total nodes again here
     def init_counts(self, num_total_nodes):
         self.num_total_nodes = num_total_nodes
         self.counts = torch.zeros(num_total_nodes, dtype=torch.long, device=self.device)
 
-        self.topk_stream = torch.cuda.Stream(device=self.device)
-        self.update_stream = torch.cuda.Stream(device=self.device)
+        # self.topk_stream = torch.cuda.Stream(device=self.device)
+        # self.update_stream = torch.cuda.Stream(device=self.device)
+        self.topk_stream = None
+        self.update_stream = None
 
         self.most_common_nids = None
         self.topk_started = False
+        print('FeatureStore', self.device_index, 'initialized counts')
+        for i in range(len(self.peers)):
+            print('peer', i, 'self.counts', hasattr(self.peers[i], 'counts'))
 
     def compute_topk(self):
         # with torch.cuda.stream(self.topk_stream):
@@ -238,8 +257,25 @@ class CountingFeatServer(FeatureServer):
         pass
 
     def update_cache(self, feats):
+        assert(self.nid_is_on_gpu.is_shared())
+        assert(self.cache_mapping.is_shared())
+        if self.update_stream is None:
+            self.topk_stream = torch.cuda.Stream(device=self.device)
+            self.update_stream = torch.cuda.Stream(device=self.device)
+
         with torch.cuda.stream(self.update_stream):
-            v, most_common_nids = torch.topk(self.counts.to(self.device), self.cache_size, sorted=False)
+            if len(self.peers) > 1:
+                self.peer_lock[self.device_index].acquire()
+                # total_counts = functools.reduce(torch.add, [peer.counts.to(self.device) for peer in self.peers])
+                # big_graph_arange = torch.arange(self.num_nodes, device=self.device)
+                # part_nids = big_graph_arange[big_graph_arange % len(self.peers) == self.device_index]
+                # _, most_common_idxs = torch.topk(total_counts[part_nids], self.cache_size, sorted=False)
+                # most_common_nids = part_nids[most_common_idxs]
+                part_counts = self.counts[self.device_index::len(self.peers)]
+                _, top_part_idxs = torch.topk(part_counts, self.cache_size, sorted=False)
+                most_common_nids = top_part_idxs * len(self.peers) + self.device_index
+            else:
+                v, most_common_nids = torch.topk(self.counts, self.cache_size, sorted=False)
             assert(torch.all(self.counts >= 0))
             # # Resets cache mask (nothing stored anymore)
             # if not self.topk_started:
@@ -268,8 +304,12 @@ class CountingFeatServer(FeatureServer):
 
             self.cache_mapping[requires_update_mask] = requires_update_cache_idx
             #!! Need this weird copy_ to perform device to host non blocking transfer (and into pinned memory buffer)
-            self.nid_is_on_gpu = most_common_mask
+            self.nid_is_on_gpu.copy_(most_common_mask)
             self.cache_mapping[~most_common_mask] = -1
+
+            if len(self.peers) > 1:
+                self.peer_lock[self.device_index].release()
+
             torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
             
         torch.cuda.current_stream().wait_stream(self.update_stream)
@@ -287,6 +327,11 @@ class CountingFeatServer(FeatureServer):
             self.counts[node_ids] += 1
 
         return super().get_features(node_ids, feats, mfgs)
+    
+    def reset_cache(self):
+        super().reset_cache()
+        self.counts *= 0
+        self.set_static_cache(self.original_cache_indices, list(self.cache.keys()))
     
 class LFUServer(FeatureServer):
 

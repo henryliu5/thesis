@@ -32,6 +32,9 @@ def test_feat_server():
     assert (torch.all(torch.eq(feats['x'].cpu(), x_feats[torch.LongTensor([0, 1, 2])])))
     assert (torch.all(torch.eq(feats['y'].cpu(), y_feats[torch.LongTensor([0, 1, 2])])))
 
+def test_multi_process_feat_server():
+    pass
+
 def test_new_server_correctness():
     ''' Check that feature stores actually return the correct value.
         Short dataloading tests race conditions and general correctness.

@@ -63,10 +63,9 @@ if __name__ == '__main__':
     torch.cat([edge["in"] for edge in trace.edges], out=out_edge_endpoints)
     print('Creating fast edges done in', time.time() - s)
 
-    torch.set_num_threads(1)
     num_engines = torch.cuda.device_count()
 
-    request_queue = Queue(num_engines)
+    request_queue = Queue()
     response_queue = Queue()
     # # Request generator + Inference Engines + Response recipient
     start_barrier = Barrier(2 + num_engines)
@@ -77,7 +76,7 @@ if __name__ == '__main__':
 
     request_generator = RequestGenerator(request_queue=request_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                          num_engines=num_engines,
-                                         trace=trace, batch_size=batch_size, max_iters=max_iters, rate=0, trials=num_trials)
+                                         trace=trace, batch_size=batch_size, max_iters=max_iters, rate=30, trials=num_trials)
     request_generator.start()
     response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                            num_engines=num_engines,
@@ -113,9 +112,14 @@ if __name__ == '__main__':
 
         part_indices = part_nids[indices]
 
-        f = FeatureServer(num_nodes, feats, torch.device(
+        if cache_type == 'static':
+            store_type = FeatureServer
+        elif cache_type == 'count':
+            store_type = CountingFeatServer
+
+        f = store_type(num_nodes, feats, torch.device(
             'cuda', device_id), ['feat'], use_pinned_mem=True, profile_hit_rate=True, pinned_buf_size=1_000_000, peer_lock=peer_lock)
-        f.set_static_cache(part_indices, ['feat'])
+        f.set_static_cache(part_indices, ['feat']) 
         feature_stores.append(f)
 
     
@@ -123,6 +127,7 @@ if __name__ == '__main__':
 
     for device_id in range(num_engines):
         feature_stores[device_id].set_peer_group(feature_stores)
+        feature_stores[device_id].init_counts(num_nodes)
 
     logical_g = dgl.graph(g.edges())
 
@@ -137,6 +142,7 @@ if __name__ == '__main__':
                                 start_barrier=start_barrier,
                                 finish_barrier=finish_barrier,
                                 trial_barriers=trial_barriers,
+                                num_engines=num_engines,
                                 device=torch.device('cuda', device_id),
                                 feature_store=feature_stores[device_id],
                                 logical_g = logical_g,

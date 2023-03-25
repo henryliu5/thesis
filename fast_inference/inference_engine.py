@@ -8,6 +8,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 from contextlib import nullcontext
 import time
 from copy import deepcopy
+import os
 
 class InferenceEngine(Process):
     def __init__(self, request_queue: Queue,
@@ -15,6 +16,7 @@ class InferenceEngine(Process):
                  start_barrier: Barrier,
                  finish_barrier: Barrier,
                  trial_barriers: Barrier,
+                 num_engines: int,
                  device: torch.device,
                  feature_store: FeatureServer,
                  logical_g,
@@ -27,6 +29,7 @@ class InferenceEngine(Process):
         self.start_barrier = start_barrier
         self.finish_barrier = finish_barrier
         self.trial_barriers = trial_barriers
+        self.num_engines = num_engines
         self.device = device
         self.device_id = device.index
         self.feature_store = feature_store
@@ -44,21 +47,22 @@ class InferenceEngine(Process):
 
     def run(self):
         # TODO change to num cpu threads / num inference engine
-        torch.set_num_threads(16)
+        # print(os.cpu_count()) # 64 on mew
+        torch.set_num_threads(os.cpu_count() // self.num_engines)
+        print('using threads:', torch.get_num_threads())
 
         # Need to re-pin the feature store buffer
         for k, v in self.feature_store.pinned_buf_dict.items():
             self.feature_store.pinned_buf_dict[k] = v.pin_memory()
 
-        self.feature_store.init_counts(self.feature_store.num_nodes)
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
 
         print('InferenceEngine', self.device_id, 'started')
         self.start_barrier.wait()
 
-        update_window = 10
-        requests_handled = 0
+        update_window = 10# * self.num_engines
+        requests_handled = 2
     
         use_prof = False
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
@@ -83,9 +87,9 @@ class InferenceEngine(Process):
                                 inputs = inputs['feat']
                             
                             with Timer('model'):
-                                self.feature_store.peer_lock[self.device_id].acquire()
-                                time.sleep(0.001)
-                                self.feature_store.peer_lock[self.device_id].release()
+                                # self.feature_store.peer_lock[self.device_id].acquire()
+                                # time.sleep(0.001)
+                                # self.feature_store.peer_lock[self.device_id].release()
                                 x = self.model(mfgs, inputs)
                                 x.cpu()
 
@@ -103,6 +107,7 @@ class InferenceEngine(Process):
                         print_timer_info()    
                         clear_timers()
                         # TODO reset feature store state
+                        self.feature_store.reset_cache()
                         print(f"Engine {self.device_id}: finished trial {cur_trial}")
                         self.trial_barriers[cur_trial].wait()
                         cur_trial += 1
