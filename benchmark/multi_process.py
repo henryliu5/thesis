@@ -53,15 +53,16 @@ if __name__ == '__main__':
         dataset, infer_percent, partitions=5, force_reload=False, verbose=True)
     trace = infer_data.create_inference_trace(subgraph_bias=subgraph_bias)
 
-    s = time.time()
-    in_edge_count = torch.tensor([edge["in"].shape[0] for edge in trace.edges])
-    in_edge_endpoints = torch.empty(in_edge_count.sum(), dtype=torch.int64, pin_memory=True)
-    torch.cat([edge["in"] for edge in trace.edges], out=in_edge_endpoints)
+    # s = time.time()
+    # in_edge_count = torch.tensor([edge["in"].shape[0] for edge in trace.edges])
+    # in_edge_endpoints = torch.empty(in_edge_count.sum(), dtype=torch.int64, pin_memory=True)
+    # torch.cat([edge["in"] for edge in trace.edges], out=in_edge_endpoints)
 
-    out_edge_count = torch.tensor([edge["in"].shape[0] for edge in trace.edges])
-    out_edge_endpoints = torch.empty(out_edge_count.sum(), dtype=torch.int64, pin_memory=True)
-    torch.cat([edge["in"] for edge in trace.edges], out=out_edge_endpoints)
-    print('Creating fast edges done in', time.time() - s)
+    # out_edge_count = torch.tensor([edge["in"].shape[0] for edge in trace.edges])
+    # out_edge_endpoints = torch.empty(out_edge_count.sum(), dtype=torch.int64, pin_memory=True)
+    # torch.cat([edge["in"] for edge in trace.edges], out=out_edge_endpoints)
+    # trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
+    # print('Creating fast edges done in', time.time() - s)
 
     num_engines = torch.cuda.device_count()
 
@@ -71,8 +72,6 @@ if __name__ == '__main__':
     start_barrier = Barrier(2 + num_engines)
     finish_barrier = Barrier(2 + num_engines)
     trial_barriers = [Barrier(2 + num_engines) for _ in range(num_trials)]
-
-    trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
 
     request_generator = RequestGenerator(request_queue=request_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                          num_engines=num_engines,

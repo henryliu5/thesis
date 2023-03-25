@@ -8,7 +8,7 @@ from dgl.data.utils import makedirs, save_info, load_info
 import torch as th
 import numpy as np
 from tqdm import tqdm
-from typing import List, Dict, Optional
+from typing import Optional
 from dataclasses import dataclass
 import random
 import math
@@ -48,6 +48,23 @@ class FastEdgeRepr:
                             out_edge_endpoints=self.out_edge_endpoints[out_start:out_end],
                             out_edge_count=self.out_edge_count[start_index:end_index])
 
+    @staticmethod
+    def load(path):
+        in_edge_endpoints = blosc2.load_tensor(path + '-in_edge_endpoints.pt')
+        in_edge_count = blosc2.load_tensor(path + '-in_edge_count.pt')
+        out_edge_endpoints = blosc2.load_tensor(path + '-out_edge_endpoints.pt')
+        out_edge_count = blosc2.load_tensor(path + '-out_edge_count.pt')
+        return FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
+
+    def save(self, path):
+        blosc2.save_tensor(self.in_edge_endpoints, path + '-in_edge_endpoints.pt', mode="w")
+        blosc2.save_tensor(self.in_edge_count, path + '-in_edge_count.pt', mode="w")
+        blosc2.save_tensor(self.out_edge_endpoints, path + '-out_edge_endpoints.pt', mode="w")
+        blosc2.save_tensor(self.out_edge_count, path + '-out_edge_count.pt', mode="w")
+
+    def __len__(self):
+        return self.in_edge_count.shape[0]
+
 @dataclass
 class InferenceTrace:
     """ Tensor of node IDs representing to inference targets in the trace"""
@@ -57,7 +74,7 @@ class InferenceTrace:
     """ Returns a list of dicts, each dict containing the in and out edges for a node in the trace.
         Keys are 'in' and 'out', values are tensors of node IDs.
     """
-    edges: List[Dict[str, th.Tensor]]
+    edges: FastEdgeRepr
 
     def __post_init__(self):
         # Must all have same dimension
@@ -75,25 +92,27 @@ class InferenceTrace:
         features = blosc2.load_tensor(path + '-features.pt')
         # nids = th.load(path + '-nids.pt')
         # features = th.load(path + '-features.pt')
-        in_edges = th.load(path + '-in_edges.pt')
-        out_edges = th.load(path + '-out_edges.pt')
-        edges = [{'in': in_edges[i], 'out': out_edges[i]} for i in range(len(nids))]
+        # in_edges = th.load(path + '-in_edges.pt')
+        # out_edges = th.load(path + '-out_edges.pt')
+        # edges = [{'in': in_edges[i], 'out': out_edges[i]} for i in range(len(nids))]
 
         gc.enable()
 
-        return InferenceTrace(nids, features, edges)
+        return InferenceTrace(nids, features, FastEdgeRepr.load(path))
 
     def save(self, path):
         gc.disable()
 
-        in_edges = [edge['in'] for edge in self.edges]
-        out_edges = [edge['out'] for edge in self.edges]
+        # in_edges = [edge['in'] for edge in self.edges]
+        # out_edges = [edge['out'] for edge in self.edges]
         blosc2.save_tensor(self.nids, path + '-nids.pt', mode="w")
         blosc2.save_tensor(self.features, path + '-features.pt', mode="w")
+
+        self.edges.save(path)
         # th.save(self.nids, path + '-nids.pt')
         # th.save(self.features, path + '-features.pt')
-        th.save(in_edges, path + '-in_edges.pt')
-        th.save(out_edges, path + '-out_edges.pt')
+        # th.save(in_edges, path + '-in_edges.pt')
+        # th.save(out_edges, path + '-out_edges.pt')
 
         gc.enable()
 
@@ -369,6 +388,17 @@ class InferenceDataset(DGLDataset):
         for idx in tqdm(generated_indices):
             trace_edges.append(self.infer_edges[idx])
 
+        s = time.time()
+        in_edge_count = th.tensor([edge["in"].shape[0] for edge in trace_edges])
+        in_edge_endpoints = th.empty(in_edge_count.sum(), dtype=th.int64, pin_memory=True)
+        th.cat([edge["in"] for edge in trace_edges], out=in_edge_endpoints)
+
+        out_edge_count = th.tensor([edge["in"].shape[0] for edge in trace_edges])
+        out_edge_endpoints = th.empty(out_edge_count.sum(), dtype=th.int64, pin_memory=True)
+        th.cat([edge["in"] for edge in trace_edges], out=out_edge_endpoints)
+        print('Creating fast edges done in', time.time() - s)
+
+        trace_edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
         trace = InferenceTrace(trace_nids, trace_features, trace_edges)
         assert (len(trace) == trace_len)
         # Cache on disk

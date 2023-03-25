@@ -64,18 +64,6 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         else:
             logical_g = logical_g.to(device)
 
-    # TODO remove this and just generate traces with fast mode
-    s = time.time()
-    in_edge_count = torch.tensor([edge["in"].shape[0] for edge in trace.edges])
-    in_edge_endpoints = torch.empty(in_edge_count.sum(), dtype=torch.int64, pin_memory=True)
-    torch.cat([edge["in"] for edge in trace.edges], out=in_edge_endpoints)
-
-    out_edge_count = torch.tensor([edge["in"].shape[0] for edge in trace.edges])
-    out_edge_endpoints = torch.empty(out_edge_count.sum(), dtype=torch.int64, pin_memory=True)
-    torch.cat([edge["in"] for edge in trace.edges], out=out_edge_endpoints)
-    print('Creating fast edges done in', time.time() - s)
-    trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
-
     for trial in range(trials):
         clear_timers()
         # Set up feature server
@@ -230,8 +218,8 @@ if __name__ == '__main__':
     use_gpu_sampling = True
     if use_gpu_sampling:
         names = ['reddit', 'cora', 'ogbn-products']
-        names = ['ogbn-papers100M']
-        names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
+        # names = ['ogbn-papers100M']
+        # names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
         # names = ['ogbn-papers100M']
         names = ['ogbn-products']
         # batch_sizes = [32, 64, 128, 256, 512]
