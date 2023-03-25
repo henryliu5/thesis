@@ -72,7 +72,7 @@ class FeatureServer:
 
             if len(self.peers) > 1:
                 s = time.perf_counter()
-                self.peer_lock[i].acquire()
+                self.sync_cache_read_start(i)
                 dur += time.perf_counter() - s
 
                 # Only transfer node ids that belong to that GPU
@@ -96,7 +96,7 @@ class FeatureServer:
             result_masks.append(peer_mask)
 
             if len(self.peers) > 1:
-                self.peer_lock[i].release()
+                self.sync_cache_read_end(i)
 
         [stream.synchronize() for stream in self.peer_streams]
 
@@ -229,6 +229,22 @@ class FeatureServer:
     def compute_topk(self, *args):
         pass
 
+    def sync_cache_read_start(self, index: int):
+        """Perform necessary synchronization to begin reading consistent cache state
+
+        Args:
+            index (int): Device index to be read from
+        """
+        pass
+
+    def sync_cache_read_end(self, index: int):
+        """Releease relevant synchronization resources related to self.sync_cache_read_start
+
+        Args:
+            index (int): Device index to be read from
+        """
+        pass
+
     def reset_cache(self, *args):
         for k in self.profile_info.keys():
             self.profile_info[k] = []
@@ -332,6 +348,22 @@ class CountingFeatServer(FeatureServer):
         super().reset_cache()
         self.counts *= 0
         self.set_static_cache(self.original_cache_indices, list(self.cache.keys()))
+
+    def sync_cache_read_start(self, index: int):
+        """Perform necessary synchronization to begin reading consistent cache state
+
+        Args:
+            index (int): Device index to be read from
+        """
+        self.peer_lock[index].acquire()
+
+    def sync_cache_read_end(self, index: int):
+        """Releease relevant synchronization resources related to self.sync_cache_read_start
+
+        Args:
+            index (int): Device index to be read from
+        """
+        self.peer_lock[index].release()
     
 class LFUServer(FeatureServer):
 
@@ -439,7 +471,7 @@ class ManagedCacheServer(FeatureServer):
             break
 
     def start_manager(self):
-        for feat in self.features:
+        for feat in self.cache:
             self._start_manager()
             self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, 
                                         self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
@@ -489,12 +521,20 @@ class ManagedCacheServer(FeatureServer):
         with Timer('get_features()'):
             res = {}
 
-            self.cache_manager.thread_enter()
-            # self.cache_manager.lock()
+            with Timer('get peer features'):
+                for feat in feats:
+                    peer_masks, gpu_features = self.get_peer_features(node_ids, feat)
 
             # Used to mask this particular request - not to mask the cache!!
             with Timer('compute gpu/cpu mask'):
-                gpu_mask = self.nid_is_on_gpu[node_ids]
+                torch.cuda.current_stream().synchronize()
+                # gpu_mask = self.nid_is_on_gpu[node_ids]
+                gpu_mask = functools.reduce(torch.logical_or, peer_masks)
+
+                if len(self.peers) > 1:
+                    # Verify isolation between GPU cachces
+                    assert(not torch.any(functools.reduce(torch.logical_and, peer_masks)))
+                
                 cpu_mask = ~gpu_mask
 
             if self.profile:
@@ -513,7 +553,6 @@ class ManagedCacheServer(FeatureServer):
                 # Start copy to GPU mem
                 with Timer('mask cpu feats'):
                     m = node_ids[cpu_mask]
-                    # TODO add parameter to control "use_pinned_mem"
                     # Perform resizing if necessary
                     if self.use_pinned_mem:
                         if m.shape[0] > self.pinned_buf_dict[feat].shape[0]:
@@ -538,15 +577,17 @@ class ManagedCacheServer(FeatureServer):
 
                 with Timer('move cached features', track_cuda=True):
                     # Features from GPU mem
-                    # self.cache_mapping maps the global node id to the respective index in the cache
-                    if feat in self.cache: # hacky drop in for torch.any(gpu_mask)
-                        mapping = self.cache_mapping[node_ids[gpu_mask]]
-                        assert(torch.all(mapping >= 0))
-                        required_gpu_features = self.cache[feat][mapping]
-                        res_tensor[gpu_mask] = required_gpu_features
-
-                self.cache_manager.thread_exit()
-                # self.cache_manager.unlock()
+                    if len(self.peers) == 1:
+                        res_tensor[gpu_mask] = gpu_features[0]
+                    else:
+                        for i in range(len(self.peers)):
+                            res_tensor[peer_masks[i]] = gpu_features[i]
+                    # # self.cache_mapping maps the global node id to the respective index in the cache
+                    # mapping = self.cache_mapping[node_ids[gpu_mask]]
+                    # assert(torch.all(mapping >= 0))
+                    # required_gpu_features = self.cache[feat][mapping]
+                    # res_tensor[gpu_mask] = required_gpu_features
+                
                 res[feat] = res_tensor
 
                 with Timer('cache update'):
@@ -606,3 +647,19 @@ class ManagedCacheServer(FeatureServer):
                         #     self.nid_is_on_gpu[nids_to_add] = True
 
         return res, mfgs
+
+    def sync_cache_read_start(self, index: int):
+        """Perform necessary synchronization to begin reading consistent cache state
+
+        Args:
+            index (int): Device index to be read from
+        """
+        self.cache_manager.thread_enter()
+
+    def sync_cache_read_end(self, index: int):
+        """Releease relevant synchronization resources related to self.sync_cache_read_start
+
+        Args:
+            index (int): Device index to be read from
+        """
+        self.cache_manager.thread_exit()
