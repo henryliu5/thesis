@@ -2,7 +2,7 @@
 from fast_inference.dataset import InferenceDataset, FastEdgeRepr
 from fast_inference.models.factory import load_model
 from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, ManagedCacheServer
-from fast_inference.sampler import InferenceSampler
+from fast_inference.util import create_feature_stores
 from fast_inference.inference_engine import InferenceEngine
 from fast_inference.request_generator import RequestGenerator, ResponseRecipient
 import dgl
@@ -90,44 +90,8 @@ if __name__ == '__main__':
     model.eval()
 
     num_nodes = g.num_nodes()
-    feats = g.ndata
-
-    out_deg = g.out_degrees()
-    # _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=True)
-    # del out_deg
+    feature_stores = create_feature_stores(cache_type, num_engines, g, ['feat'], cache_percent, use_pinned_mem, profile_hit_rate=True, pinned_buf_size=1_000_000)
     
-
-    peer_lock = [Lock() for _ in range(num_engines)]
-    nids = torch.arange(g.num_nodes())
-
-    # peer_lock = Lock()
-    # Build list of feature stores
-    feature_stores = []
-    for device_id in range(num_engines):
-        # mod partition
-        part_nids = nids[nids % num_engines == device_id]
-        
-        _, indices = torch.topk(out_deg[part_nids], int(g.num_nodes() * cache_percent / num_engines), sorted=True)
-
-        part_indices = part_nids[indices]
-
-        if cache_type == 'static':
-            store_type = FeatureServer
-        elif cache_type == 'count':
-            store_type = CountingFeatServer
-
-        f = store_type(num_nodes, feats, torch.device(
-            'cuda', device_id), ['feat'], use_pinned_mem=True, profile_hit_rate=True, pinned_buf_size=1_000_000, peer_lock=peer_lock)
-        f.set_static_cache(part_indices, ['feat']) 
-        feature_stores.append(f)
-
-    
-    del out_deg
-
-    for device_id in range(num_engines):
-        feature_stores[device_id].set_peer_group(feature_stores)
-        feature_stores[device_id].init_counts(num_nodes)
-
     logical_g = dgl.graph(g.edges())
 
     engines = []
