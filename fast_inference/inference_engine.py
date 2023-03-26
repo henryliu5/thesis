@@ -122,13 +122,15 @@ class InferenceEngine(Process):
                         # TODO reset feature store state
                         self.feature_store.reset_cache()
                         print(f"Engine {self.device_id}: finished trial {cur_trial}")
+                        print(f"Engine {self.device_id}: {self.feature_store.lock_conflicts} lock conflicts")
+                        self.feature_store.lock_conflicts = 0
                         self.trial_barriers[cur_trial].wait()
                         cur_trial += 1
                         
         if use_prof:
             prof.export_chrome_trace(f'multiprocess_trace_rank_{self.device_id}.json')
 
-        print(f"Engine {self.device_id}: {self.feature_store.lock_conflicts} lock conflicts")
+        
         self.finish_barrier.wait()
 
 

@@ -42,11 +42,6 @@ def create_feature_stores(cache_type: str, num_stores: int, graph: dgl.DGLGraph,
         _, indices = torch.topk(out_deg[part_nids], int(graph.num_nodes() * cache_percent / num_stores), sorted=True)
         part_indices = part_nids[indices]
 
-        if cache_type == 'static':
-            store_type = FeatureServer
-        elif cache_type == 'count':
-            store_type = CountingFeatServer
-
         f = store_type(num_nodes, features, torch.device(
             'cuda', device_id), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=profile_hit_rate, pinned_buf_size=pinned_buf_size, **additional_args)
         f.set_static_cache(part_indices, ['feat']) 

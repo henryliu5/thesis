@@ -39,7 +39,7 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--cache_percent', type=float, default=0.2,
                            help="Cache size, represented as a percentage of the overall graph's nodes")
     
-    parser.add_argument('-o', '--output_path', type=str, default='benchmark/data_cache_10/new_cache',
+    parser.add_argument('-o', '--output_path', type=str, default='multi_testing',
                            help='Output path for timing results')
     
     parser.add_argument('-t', '--trials', type=int, default=1,
@@ -54,7 +54,7 @@ if __name__ == '__main__':
     model_name = 'gcn'
     subgraph_bias = args.subgraph_bias
     cache_percent = 0.2
-    dir = 'multi_testing'
+    dir = args.output_path
     use_gpu_sampling = True
     use_pinned_mem = True
     cache_type = args.cache
@@ -87,7 +87,7 @@ if __name__ == '__main__':
     # trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
     # print('Creating fast edges done in', time.time() - s)
 
-    request_queue = Queue()
+    request_queue = Queue(num_engines)
     response_queue = Queue()
     # # Request generator + Inference Engines + Response recipient
     start_barrier = Barrier(2 + num_engines)
@@ -96,7 +96,7 @@ if __name__ == '__main__':
 
     request_generator = RequestGenerator(request_queue=request_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                          num_engines=num_engines,
-                                         trace=trace, batch_size=batch_size, max_iters=max_iters, rate=30, trials=num_trials)
+                                         trace=trace, batch_size=batch_size, max_iters=max_iters, rate=0, trials=num_trials)
     request_generator.start()
     response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                            num_engines=num_engines,

@@ -107,7 +107,7 @@ class FeatureServer:
         [stream.synchronize() for stream in self.peer_streams]
 
         if dur > 0.0005:
-            # print('Waited for lock', dur)
+            print('Waited for lock', dur)
             self.lock_conflicts += 1
 
         return result_masks, result_features
@@ -452,8 +452,7 @@ class ManagedCacheServer(FeatureServer):
 
     def _start_manager(self):
         self.num_total_nodes = self.num_nodes
-        self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, -1, -1, 0, True)
-
+        self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, self.device_index, len(self.peers), True)
 
     def set_static_cache(self, node_ids: torch.Tensor, feats: List[str]):
         """Define a static cache using the given node ids.
@@ -677,7 +676,9 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        self.cache_manager.thread_enter()
+        # self.cache_manager.thread_enter()
+        self.cache_manager.read_lock(index)
+        pass
         # TODO put this actual isolation check everywhere
         # assert(not torch.any(self.nid_is_on_gpu[(self.device_index + 1) % 2::2]))
 
@@ -687,4 +688,6 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        self.cache_manager.thread_exit()
+        self.cache_manager.read_unlock(index)
+        pass
+        # self.cache_manager.thread_exit()
