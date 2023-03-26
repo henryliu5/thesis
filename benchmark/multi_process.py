@@ -58,7 +58,7 @@ if __name__ == '__main__':
     use_gpu_sampling = True
     use_pinned_mem = True
     cache_type = args.cache
-    num_trials = 3
+    num_trials = args.trials
 
     trial_dir = os.path.join(dir, 'gpu' if use_gpu_sampling else 'cpu')
 

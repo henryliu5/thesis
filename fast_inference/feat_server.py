@@ -15,7 +15,8 @@ class FeatureServer:
                  use_pinned_mem: bool = True,
                  profile_hit_rate: bool = False,
                  pinned_buf_size: int = 150_000,
-                 peer_lock = None):
+                 peer_lock = None,
+                 use_locking = False):
         """ Initializes a new FeatureServer
 
         Args:
@@ -49,6 +50,7 @@ class FeatureServer:
         self.peer_streams = None
         self.peer_lock = peer_lock
         self.lock_conflicts = 0
+        self.use_locking = use_locking
 
     def set_peer_group(self, peers):
         self.peers = peers
@@ -676,10 +678,10 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        torch.cuda.synchronize()
         # self.cache_manager.thread_enter()
-        self.cache_manager.read_lock(index)
-        pass
+        if self.use_locking:
+            torch.cuda.synchronize()
+            self.cache_manager.read_lock(index)
         # TODO put this actual isolation check everywhere
         # assert(not torch.any(self.nid_is_on_gpu[(self.device_index + 1) % 2::2]))
 
@@ -689,7 +691,8 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        torch.cuda.synchronize()
-        self.cache_manager.read_unlock(index)
-        pass
         # self.cache_manager.thread_exit()
+        if self.use_locking:
+            torch.cuda.synchronize()
+            self.cache_manager.read_unlock(index)
+        

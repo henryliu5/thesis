@@ -34,6 +34,9 @@ def create_feature_stores(cache_type: str, num_stores: int, graph: dgl.DGLGraph,
         additional_args['peer_lock'] = [Lock() for _ in range(num_stores)]
     elif cache_type == 'cpp':
         store_type = ManagedCacheServer
+    elif cache_type == 'cpp_lock':
+        store_type = ManagedCacheServer
+        additional_args['use_locking'] = True
 
     feature_stores = []
     for device_id in range(num_stores):
