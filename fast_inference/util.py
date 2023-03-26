@@ -1,7 +1,7 @@
 from torch.multiprocessing import Lock
 import torch
 import dgl
-from fast_inference.feat_server import FeatureServer, CountingFeatServer
+from fast_inference.feat_server import FeatureServer, CountingFeatServer, ManagedCacheServer
 from typing import List
 
 def create_feature_stores(cache_type: str, num_stores: int, graph: dgl.DGLGraph, track_feature_types: List[str], cache_percent: float,
@@ -32,6 +32,8 @@ def create_feature_stores(cache_type: str, num_stores: int, graph: dgl.DGLGraph,
     elif cache_type == 'count':
         store_type = CountingFeatServer
         additional_args['peer_lock'] = [Lock() for _ in range(num_stores)]
+    elif cache_type == 'cpp':
+        store_type = ManagedCacheServer
 
     feature_stores = []
     for device_id in range(num_stores):

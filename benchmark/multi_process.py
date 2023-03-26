@@ -23,18 +23,41 @@ from contextlib import nullcontext
 import os
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser("Benchmark inference system performance")
+    # parser.add_argument('--dataset', type=str, default='ogbn-products',
+                        #    help='datasets: reddit, cora, ogbn-products, ogbn-papers100M')
+    parser.add_argument('-c', '--cache', type=str,
+                           help='Set caching method: static, counting, lfu, hybrid')
+    parser.add_argument('-b', '--subgraph_bias', type=float, default=None,
+                        help='TODO')
+    # parser.add_argument('--use_gpu_sampling', action='store_true',
+    #                     help='Enable gpu sampling')
+    parser.add_argument('--use_pinned_mem', action='store_true',
+                           help='Enable cache pinned memory optimization')
+    parser.add_argument('--profile', action='store_true',
+                           help='Use PyTorch profiler')
+    parser.add_argument('-p', '--cache_percent', type=float, default=0.2,
+                           help="Cache size, represented as a percentage of the overall graph's nodes")
+    
+    parser.add_argument('-o', '--output_path', type=str, default='benchmark/data_cache_10/new_cache',
+                           help='Output path for timing results')
+    
+    parser.add_argument('-t', '--trials', type=int, default=1,
+                           help="Number of trials to run")
+    args = parser.parse_args()
 
+    num_engines = torch.cuda.device_count()
     dataset = 'ogbn-products'
     batch_size = 256
     max_iters = 512000
     infer_percent = 0.1
     model_name = 'gcn'
-    subgraph_bias = None
+    subgraph_bias = args.subgraph_bias
     cache_percent = 0.2
     dir = 'multi_testing'
     use_gpu_sampling = True
     use_pinned_mem = True
-    cache_type = 'static'
+    cache_type = args.cache
     num_trials = 3
 
     trial_dir = os.path.join(dir, 'gpu' if use_gpu_sampling else 'cpu')
@@ -64,8 +87,6 @@ if __name__ == '__main__':
     # trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
     # print('Creating fast edges done in', time.time() - s)
 
-    num_engines = torch.cuda.device_count()
-
     request_queue = Queue()
     response_queue = Queue()
     # # Request generator + Inference Engines + Response recipient
@@ -91,7 +112,7 @@ if __name__ == '__main__':
 
     num_nodes = g.num_nodes()
     feature_stores = create_feature_stores(cache_type, num_engines, g, ['feat'], cache_percent, use_pinned_mem, profile_hit_rate=True, pinned_buf_size=1_000_000)
-    
+
     logical_g = dgl.graph(g.edges())
 
     engines = []

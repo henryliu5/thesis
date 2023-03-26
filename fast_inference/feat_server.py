@@ -89,6 +89,12 @@ class FeatureServer:
 
             with torch.cuda.stream(self.peer_streams[i]):
                 mapping = peer.cache_mapping[peer_nids]
+
+                if len(self.peers) > 1:
+                    assert(peer.nid_is_on_gpu.is_shared())
+                    assert(peer.cache_mapping.is_shared())
+                    assert(peer.cache[feat].is_shared())
+
                 # assert(torch.all(mapping >= 0))
                 result_features.append(peer.cache[feat][mapping].to(self.device))
                 peer_mask = peer_mask.to(self.device)
@@ -433,8 +439,8 @@ class ManagedCacheServer(FeatureServer):
         self.num_total_nodes = num_total_nodes
         self.counts = torch.zeros(num_total_nodes, dtype=torch.short, device=self.device)
 
-        self.topk_stream = torch.cuda.Stream(device=self.device)
-        self.update_stream = torch.cuda.Stream(device=self.device)
+        self.topk_stream = None
+        self.update_stream = None
 
         self.is_cache_candidate = None
         self.most_common_nids = None
@@ -478,6 +484,11 @@ class ManagedCacheServer(FeatureServer):
             break
 
     def compute_topk(self):
+        if self.topk_stream is None:
+            self.topk_stream = torch.cuda.Stream(device=self.device)
+        if self.update_stream is None:
+            self.update_stream = torch.cuda.Stream(device=self.device)
+    
         with torch.cuda.stream(self.topk_stream):
             if self.is_cache_candidate is None:
                 self.is_cache_candidate = torch.zeros(self.num_total_nodes, dtype=torch.bool, device=self.device)
@@ -485,7 +496,18 @@ class ManagedCacheServer(FeatureServer):
             else:
                 torch.zeros(self.num_total_nodes, out=self.is_cache_candidate, dtype=torch.bool, device=self.device)
 
-            _, self.most_common_nids = torch.topk(self.counts.to(self.device, non_blocking=True), self.cache_size, sorted=False)
+
+            if len(self.peers) > 1:
+                # total_counts = functools.reduce(torch.add, [peer.counts.to(self.device) for peer in self.peers])
+                # big_graph_arange = torch.arange(self.num_nodes, device=self.device)
+                # part_nids = big_graph_arange[big_graph_arange % len(self.peers) == self.device_index]
+                # _, most_common_idxs = torch.topk(total_counts[part_nids], self.cache_size, sorted=False)
+                # most_common_nids = part_nids[most_common_idxs]
+                part_counts = self.counts[self.device_index::len(self.peers)]
+                _, top_part_idxs = torch.topk(part_counts, self.cache_size, sorted=False)
+                self.most_common_nids = top_part_idxs * len(self.peers) + self.device_index
+            else:
+                _, self.most_common_nids = torch.topk(self.counts.to(self.device, non_blocking=True), self.cache_size, sorted=False)
 
             self.topk_started = True
             self.topk_processed = False
@@ -532,7 +554,8 @@ class ManagedCacheServer(FeatureServer):
                 gpu_mask = functools.reduce(torch.logical_or, peer_masks)
 
                 if len(self.peers) > 1:
-                    # Verify isolation between GPU cachces
+                    #!! Verify isolation between GPU cachces
+                    #TODO this does not work since the masks are forced to be isolated by self.get_peer_features()
                     assert(not torch.any(functools.reduce(torch.logical_and, peer_masks)))
                 
                 cpu_mask = ~gpu_mask
@@ -655,6 +678,8 @@ class ManagedCacheServer(FeatureServer):
             index (int): Device index to be read from
         """
         self.cache_manager.thread_enter()
+        # TODO put this actual isolation check everywhere
+        # assert(not torch.any(self.nid_is_on_gpu[(self.device_index + 1) % 2::2]))
 
     def sync_cache_read_end(self, index: int):
         """Releease relevant synchronization resources related to self.sync_cache_read_start

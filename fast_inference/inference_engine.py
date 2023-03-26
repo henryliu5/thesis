@@ -9,6 +9,8 @@ from contextlib import nullcontext
 import time
 from copy import deepcopy
 import os
+import psutil
+from dgl.utils.internal import get_numa_nodes_cores
 
 class InferenceEngine(Process):
     def __init__(self, request_queue: Queue,
@@ -44,12 +46,23 @@ class InferenceEngine(Process):
         self.batch_size = batch_size
         self.output_path = output_path
     
-
+    @torch.inference_mode()
     def run(self):
+        numa_info = get_numa_nodes_cores()
+        # Pin just to first cpu in each core in numa node 0 (DGL approach)
+        pin_cores = [cpus[0] for core_id, cpus in numa_info[0]]
+        psutil.Process().cpu_affinity(pin_cores)
+        print(f'engine {self.device_id}, cpu affinity', psutil.Process().cpu_affinity())
+
+        assert(torch.is_inference_mode_enabled())
         # TODO change to num cpu threads / num inference engine
         # print(os.cpu_count()) # 64 on mew
-        torch.set_num_threads(os.cpu_count() // self.num_engines)
-        print('using threads:', torch.get_num_threads())
+        torch.set_num_threads(os.cpu_count() // self.num_engines // 2)
+        # 3/25 I don't think changing interop should make difference
+        torch.set_num_interop_threads(os.cpu_count() // self.num_engines // 2)
+        # torch.set_num_interop_threads()
+        print('using intra-op threads:', torch.get_num_threads())
+        print('using inter-op threads', torch.get_num_interop_threads())
 
         # Need to re-pin the feature store buffer
         for k, v in self.feature_store.pinned_buf_dict.items():
