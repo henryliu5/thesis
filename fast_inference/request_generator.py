@@ -1,7 +1,7 @@
 import torch
 from torch.multiprocessing import Process, Queue, Barrier
 from fast_inference.dataset import InferenceTrace
-from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_timer_info
+from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_timer_info, export_dict_as_pd
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -152,6 +152,14 @@ class ResponseRecipient(Process):
                     self.trial_barriers[cur_trial].wait()
                     cur_trial += 1
                     num_resets = 0
+
+                    # TODO make this use id to determine number of request handled
+                    throughput = self.num_engines * (1 / (sum(TRACES['total']) / len(TRACES['total'])))
+                    print('reqsuests handled', len(TRACES['total']))
+                    print('avg handle time', (sum(TRACES['total']) / len(TRACES['total'])))
+                    print('--------------throughput', throughput)
+                    # export_dict_as_pd({'throughput (req/s)': }, f'{self.output_path}/{self.model_name.upper()}/throughput', {'name': self.dataset, 'batch_size': self.batch_size, 'trial': cur_trial, 'num_engines': self.num_engines})
+
                     clear_timers()
         
         self.finish_barrier.wait()
