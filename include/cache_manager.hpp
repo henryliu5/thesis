@@ -330,6 +330,7 @@ public:
                 if(gpu_q.wait_and_pop(p)){
                     // TODO add setting to enable mutex or use atomics
                     // cache_mutex.lock();
+                    torch::cuda::synchronize();
                     local_ipc_mutex.lock();
                     /**
                      * Needed:
@@ -363,6 +364,7 @@ public:
 
                     const float THRESHOLD = 0.01;
                     if((float) nids_to_add.sizes()[0] / (float) cache_size <= THRESHOLD){
+                        torch::cuda::synchronize();
                         local_ipc_mutex.unlock();
                         continue;
                     }
@@ -380,6 +382,7 @@ public:
                     // TODO figure out "usefulness" threshold
                     if(num_to_add == 0){
                         // cache_mutex.unlock();
+                        torch::cuda::synchronize();
                         local_ipc_mutex.unlock();
                         continue;
                     }
@@ -413,6 +416,7 @@ public:
                     cache_mask_device.index_put_({nids_to_add}, true);
 
                     // cache_mutex.unlock();
+                    torch::cuda::synchronize();
                     local_ipc_mutex.unlock();
                 }
                 

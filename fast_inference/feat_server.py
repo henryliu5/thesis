@@ -99,10 +99,10 @@ class FeatureServer:
                 result_features.append(peer.cache[feat][mapping].to(self.device))
                 peer_mask = peer_mask.to(self.device)
 
-            result_masks.append(peer_mask)
+                if len(self.peers) > 1:
+                    self.sync_cache_read_end(i)
 
-            if len(self.peers) > 1:
-                self.sync_cache_read_end(i)
+            result_masks.append(peer_mask)
 
         [stream.synchronize() for stream in self.peer_streams]
 
@@ -676,6 +676,7 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
+        torch.cuda.synchronize()
         # self.cache_manager.thread_enter()
         self.cache_manager.read_lock(index)
         pass
@@ -688,6 +689,7 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
+        torch.cuda.synchronize()
         self.cache_manager.read_unlock(index)
         pass
         # self.cache_manager.thread_exit()
