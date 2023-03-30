@@ -173,6 +173,11 @@ class FeatureServer:
                     if self.use_pinned_mem:
                         # Places indices directly into pinned memory buffer
                         torch.index_select(self.features[feat], 0, m, out=required_cpu_features)
+                        # if not self.features[feat].is_pinned():
+                        #     # print(type(self.features[feat]))
+                        #     self.features[feat] = self.features[feat].pin_memory()
+                        #     # self.features[feat] = dgl.utils.pin_memory_inplace(self.features[feat])
+                        # required_cpu_features = dgl.utils.pin_memory.gather_pinned_tensor_rows(self.features[feat], m.to(self.device))
                     else:
                         #"slow mode"
                         required_cpu_features = torch.index_select(self.features[feat], 0, m)
@@ -454,7 +459,7 @@ class ManagedCacheServer(FeatureServer):
 
     def _start_manager(self):
         self.num_total_nodes = self.num_nodes
-        self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, self.device_index, len(self.peers), True)
+        self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, self.device_index, len(self.peers), True, self.use_locking)
 
     def set_static_cache(self, node_ids: torch.Tensor, feats: List[str]):
         """Define a static cache using the given node ids.
@@ -678,12 +683,13 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        # self.cache_manager.thread_enter()
-        if self.use_locking:
-            torch.cuda.synchronize()
-            self.cache_manager.read_lock(index)
-        # TODO put this actual isolation check everywhere
-        # assert(not torch.any(self.nid_is_on_gpu[(self.device_index + 1) % 2::2]))
+        with Timer('read lock enter'):
+            # self.cache_manager.thread_enter()
+            if self.use_locking:
+                torch.cuda.synchronize()
+                self.cache_manager.read_lock(index)
+            # TODO put this actual isolation check everywhere
+            # assert(not torch.any(self.nid_is_on_gpu[(self.device_index + 1) % 2::2]))
 
     def sync_cache_read_end(self, index: int):
         """Releease relevant synchronization resources related to self.sync_cache_read_start
@@ -691,8 +697,9 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        # self.cache_manager.thread_exit()
-        if self.use_locking:
-            torch.cuda.synchronize()
-            self.cache_manager.read_unlock(index)
+        with Timer('read lock unlock'):
+            # self.cache_manager.thread_exit()
+            if self.use_locking:
+                torch.cuda.synchronize()
+                self.cache_manager.read_unlock(index)
         

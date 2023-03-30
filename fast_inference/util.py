@@ -2,6 +2,7 @@ from torch.multiprocessing import Lock
 import torch
 import dgl
 from fast_inference.feat_server import FeatureServer, CountingFeatServer, ManagedCacheServer
+from fast_inference_cpp import shm_setup
 from typing import List
 
 def create_feature_stores(cache_type: str, num_stores: int, graph: dgl.DGLGraph, track_feature_types: List[str], cache_percent: float,
@@ -21,6 +22,8 @@ def create_feature_stores(cache_type: str, num_stores: int, graph: dgl.DGLGraph,
     Returns:
         List[FeatureServer]: _description_
     """
+    shm_setup(num_stores)
+
     num_nodes = graph.num_nodes()
     features = {f: graph.ndata[f] for f in track_feature_types}
     out_deg = graph.out_degrees()

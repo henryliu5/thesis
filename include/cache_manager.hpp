@@ -2,6 +2,8 @@
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/condition_variable.hpp>
 #include <boost/thread.hpp>
+#include <boost/interprocess/managed_shared_memory.hpp>
+#include <boost/interprocess/sync/interprocess_sharable_mutex.hpp>
 #include <boost/interprocess/sync/named_sharable_mutex.hpp>
 #include <queue>
 #include <thread>
@@ -145,6 +147,20 @@ public:
 
 using namespace boost::interprocess;
 
+void shmSetup(int num_devices){
+    shared_memory_object::remove("fast_inference_shared_mem");
+    managed_shared_memory segment(create_only, "fast_inference_shared_mem", 65536);
+
+    for(int i = 0; i < num_devices; i++){
+        // cout << "Cleaning up and creating new named mutexes" << endl;
+        // named_sharable_mutex::remove(("fast_inference_mutex_gpu_" + std::to_string(i)).c_str());
+        // named_sharable_mutex(create_only, ("fast_inference_mutex_gpu_" + std::to_string(i)).c_str());
+        auto lock_name = ("fast_inference_mutex_gpu_" + std::to_string(i)).c_str();
+        cout << "Constructing lock: " << lock_name << endl;
+        segment.construct<interprocess_sharable_mutex>(lock_name)();
+    }
+}
+
 class CacheManager {
     /** Controls cache state.
      *  Computes cache usage statistics and performs dynamic cache updates.
@@ -174,8 +190,10 @@ private:
     // std::unordered_map<std::string, torch::Tensor> cache;
     torch::Tensor cache;
 
-    std::vector<std::unique_ptr<named_sharable_mutex>> interprocess_mutexes;
-    named_sharable_mutex local_ipc_mutex;
+    std::vector<interprocess_sharable_mutex*> interprocess_mutexes;
+    interprocess_sharable_mutex* local_ipc_mutex;
+    managed_shared_memory segment;
+    bool use_locking;
 
     // CacheManager specific cache metadata
     torch::Tensor counts;
@@ -196,10 +214,11 @@ private:
 
 
 public:
-    CacheManager(const int num_total_nodes, const int cache_size, const int device_id, const int num_engines, bool use_gpu_transfer)
+    CacheManager(const int num_total_nodes, const int cache_size, const int device_id, const int num_engines, bool use_gpu_transfer, bool use_locking)
         : cache_size(cache_size)
         , worker_alive(true)
-        , worker_thread(&CacheManager::smallWorker, this)
+        , gpu_q()
+        , worker_thread{}
         // , update_frequency(update_frequency)
         // , decay_frequency(decay_frequency)
         // , staging_area_size(staging_area_size)
@@ -209,10 +228,23 @@ public:
         , use_gpu_transfer(use_gpu_transfer)
         , num_engines(num_engines)
         , device_id(device_id)
-        , local_ipc_mutex((named_sharable_mutex::remove( ("fast_inference_mutex_gpu_" + std::to_string(device_id)).c_str() ), open_or_create), 
-                          ("fast_inference_mutex_gpu_" + std::to_string(device_id)).c_str()
-                          )
+        , segment(open_only, "fast_inference_shared_mem")
+        , local_ipc_mutex(0)
+        , use_locking(use_locking)
+        // , local_ipc_mutex(open_or_create, "test")
+        // , local_ipc_mutex(open_only, ("fast_inference_mutex_gpu_" + std::to_string(device_id)).c_str())
+        // , local_ipc_mutex((named_sharable_mutex::remove( ("fast_inference_mutex_gpu_" + std::to_string(device_id)).c_str() ), open_or_create), 
+        //                   ("fast_inference_mutex_gpu_" + std::to_string(device_id)).c_str()
+        //                   )
     {
+        auto lock_name = ("fast_inference_mutex_gpu_" + std::to_string(device_id));
+
+        local_ipc_mutex = segment.find<interprocess_sharable_mutex>(lock_name.c_str()).first;
+        if(local_ipc_mutex == 0){
+            cout << "Failed to find lock in shm, dev id: " << device_id << " couldn't find " << lock_name << endl;
+            exit(1);
+        }
+
         // ASSERT (staging_area_size <= cache_size, "staging_area_size must be smaller than the cache size, staging_area_size: " << staging_area_size << " cache_size: " << cache_size);
         counts = torch::zeros(num_total_nodes, torch::dtype(torch::kLong));
         // requests_handled2 = 0;
@@ -220,8 +252,11 @@ public:
 
         cout << "Setting local mutex to " << "fast_inference_mutex_gpu_" + std::to_string(device_id) << endl;
         for(int i = 0; i < num_engines; i++){
-            interprocess_mutexes.push_back(std::make_unique<named_sharable_mutex>(open_or_create, ("fast_inference_mutex_gpu_" + std::to_string(i)).c_str()));
+            interprocess_mutexes.push_back(segment.find<interprocess_sharable_mutex>(("fast_inference_mutex_gpu_" + std::to_string(i)).c_str()).first);
         }
+
+        //!! Start thread after so construction is done
+        worker_thread = std::thread(&CacheManager::smallWorker, this);
     }
 
     ~CacheManager()
@@ -304,6 +339,7 @@ public:
     }
 
     void readLock(int index){
+        ASSERT(index >= 0 && index < interprocess_mutexes.size(), "Acquiring lock out of range");
         interprocess_mutexes[index]->lock_sharable();
     }
 
@@ -323,15 +359,18 @@ public:
 
             while (worker_alive) {
                 #ifndef NDEBUG
-                cout << "WARNING: cache update compiled in DEBUG mode" << endl;
+                cout << "WARNING: cache update compiled in DEBUG mode: " << syscall(__NR_gettid) << endl;
                 #endif
 
                 std::tuple<torch::Tensor, torch::Tensor> p;
                 if(gpu_q.wait_and_pop(p)){
                     // TODO add setting to enable mutex or use atomics
                     // cache_mutex.lock();
-                    torch::cuda::synchronize();
-                    local_ipc_mutex.lock();
+                    if(use_locking){
+                        torch::cuda::synchronize();
+                        ASSERT(local_ipc_mutex != 0, "failed pointer nonzero");
+                        local_ipc_mutex->lock();
+                    }
                     /**
                      * Needed:
                      * - is_cache_candidate - missing
@@ -364,8 +403,10 @@ public:
 
                     const float THRESHOLD = 0.01;
                     if((float) nids_to_add.sizes()[0] / (float) cache_size <= THRESHOLD){
-                        torch::cuda::synchronize();
-                        local_ipc_mutex.unlock();
+                        if(use_locking){
+                            torch::cuda::synchronize();
+                            local_ipc_mutex->unlock();
+                        }
                         continue;
                     }
 
@@ -382,8 +423,10 @@ public:
                     // TODO figure out "usefulness" threshold
                     if(num_to_add == 0){
                         // cache_mutex.unlock();
-                        torch::cuda::synchronize();
-                        local_ipc_mutex.unlock();
+                        if(use_locking){
+                            torch::cuda::synchronize();
+                            local_ipc_mutex->unlock();
+                        }
                         continue;
                     }
 
@@ -416,14 +459,23 @@ public:
                     cache_mask_device.index_put_({nids_to_add}, true);
 
                     // cache_mutex.unlock();
-                    torch::cuda::synchronize();
-                    local_ipc_mutex.unlock();
+                    if(use_locking){
+                        torch::cuda::synchronize();
+                        local_ipc_mutex->unlock();
+                    }
                 }
                 
             }
-            std::cout << "worker exited" << std::endl;
             }
             catch (const c10::Error& e) {   cout << e.what() << endl; throw std::invalid_argument("Failed to load model: " + e.msg()); }
+            catch (const boost::exception& e)
+            {
+                std::string diag = diagnostic_information(e);
+                // display your error message here, then do whatever you need to, e.g.        
+                cout << "boost exception" << diag << endl;
+                exit(1);
+            }
+            std::cout << "worker exited" << std::endl;
         }
 
     void gilRelease(std::function<void()> f);

@@ -3,6 +3,7 @@ from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
 from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, ManagedCacheServer
 from fast_inference.sampler import InferenceSampler
+from fast_inference_cpp import shm_setup
 import dgl
 import torch
 from tqdm import tqdm
@@ -66,6 +67,7 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
 
     for trial in range(trials):
         clear_timers()
+        shm_setup(1)
         # Set up feature server
         cache_type = cache_type or 'baseline'
         if cache_type == 'static':
@@ -242,7 +244,7 @@ if __name__ == '__main__':
                         dir=None, 
                         use_gpu_sampling=use_gpu_sampling,
                         use_pinned_mem=args.use_pinned_mem,
-                        MAX_ITERS=2000,
+                        MAX_ITERS=100,
                         run_profiling=True,
                         trials=1)
                 else:
