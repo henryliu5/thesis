@@ -74,26 +74,24 @@ class FeatureServer:
         for i in range(num_peers):
             peer = self.peers[i]
 
-            if len(self.peers) > 1:
-                s = time.perf_counter()
-                self.sync_cache_read_start(i)
-                dur += time.perf_counter() - s
-
-                # Only transfer node ids that belong to that GPU
-                # peer_mask = gpu_mask & (node_ids % num_peers == i)
-                #! TODO figure out a way to possibly not transfer all nids (makes masking weird because dim 0 is reduced)
-                node_ids_peer = node_ids.to(peer.device)
-                peer_mask = peer.nid_is_on_gpu[node_ids_peer]
-                peer_nids = node_ids_peer[peer_mask]
-            else:
-                peer_mask = self.nid_is_on_gpu[node_ids]
-                peer_nids = node_ids[peer_mask]
-
-            torch.cuda.current_stream().synchronize() # Must explicitly wait for nids to reach peer
-
             with torch.cuda.stream(self.peer_streams[i]):
-                mapping = peer.cache_mapping[peer_nids]
+                if len(self.peers) > 1:
+                    s = time.perf_counter()
+                    self.sync_cache_read_start(i)
+                    dur += time.perf_counter() - s
 
+                    # Only transfer node ids that belong to that GPU
+                    # peer_mask = gpu_mask & (node_ids % num_peers == i)
+                    #! TODO figure out a way to possibly not transfer all nids (makes masking weird because dim 0 is reduced)
+                    node_ids_peer = node_ids.to(peer.device)
+                    peer_mask = peer.nid_is_on_gpu[node_ids_peer]
+                    peer_nids = node_ids_peer[peer_mask]
+                else:
+                    peer_mask = self.nid_is_on_gpu[node_ids]
+                    peer_nids = node_ids[peer_mask]
+
+                mapping = peer.cache_mapping[peer_nids]
+                
                 if len(self.peers) > 1:
                     assert(peer.nid_is_on_gpu.is_shared())
                     assert(peer.cache_mapping.is_shared())
@@ -227,6 +225,7 @@ class FeatureServer:
             self.cache_size, device=self.device)
 
         for feat in feats:
+            print('feautres are shared', self.features[feat].is_shared())
             self.cache[feat] = self.features[feat][node_ids].to(self.device)
             print('**************resetting original cache*****************')
             assert(self.cache[feat].is_shared())
@@ -360,7 +359,8 @@ class CountingFeatServer(FeatureServer):
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
         with Timer('update counts'):
-            self.counts[node_ids] += 1
+            if self.is_leader:
+                self.counts[node_ids] += 1
 
         return super().get_features(node_ids, feats, mfgs)
     
@@ -480,6 +480,9 @@ class ManagedCacheServer(FeatureServer):
             break
 
     def compute_topk(self):
+        if not self.is_leader:
+            return
+        
         if self.topk_stream is None:
             self.topk_stream = torch.cuda.Stream(device=self.device)
         if self.update_stream is None:
@@ -531,7 +534,8 @@ class ManagedCacheServer(FeatureServer):
         """
         gpu_nids = node_ids
         with Timer('update counts'):
-            self.counts[gpu_nids] += 1
+            if self.is_leader:
+                self.counts[gpu_nids] += 1
 
         if mfgs is None:
             mfgs = []
@@ -626,7 +630,8 @@ class ManagedCacheServer(FeatureServer):
                         # !! WARNING: Must use "m" here!! Since the node ids and mask are on GPU, the CPU node id tensor
                         # !! must be fully materialized by the time the tensor is placed on the queue
 
-                        self.cache_manager.place_feats_in_queue(cpu_feats, m)
+                        if self.is_leader:
+                            self.cache_manager.place_feats_in_queue(cpu_feats, m)
 
                         # # Can comment in below and comment out above to use syncrhonous update (async in stream)
                         # with torch.cuda.stream(self.update_stream):
