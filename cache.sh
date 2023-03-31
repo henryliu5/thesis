@@ -3,27 +3,48 @@ export PYTHONPATH=$PYTHONPATH:/home/henry/thesis/build
 export TORCH_USE_RTLD_GLOBAL=YES
 
 
-# python benchmark/infer_cache.py -c static -b 0.8 -p 0.1 -t 3 -o testing --use_pinned_mem
-# python benchmark/infer_cache.py -c count -b 0.8 -p 0.1 -t 3 -o testing --use_pinned_mem
-# python benchmark/infer_cache.py -c cpp -b 0.8 -p 0.1 -t 3 -o testing --use_pinned_mem
+# for i in {1..100}
+# do
+#     # python benchmark/infer_cache.py -c static -p 0.2 -t 3 -o testing/trial_$i --use_pinned_mem
+#     # python benchmark/infer_cache.py -c count -p 0.2 -t 3 -o testing/trial_$i --use_pinned_mem
+#     # python benchmark/infer_cache.py -c cpp -p 0.2 -t 3 -o testing/trial_$i --use_pinned_mem
+#     python benchmark/multi_process.py -c static -o multi_testing/trial_$i
+#     python benchmark/multi_process.py -c count -o multi_testing/trial_$i
+#     python benchmark/multi_process.py -c cpp -o multi_testing/trial_$i
+# done
+# exit
+python benchmark/multi_process.py -c static
+python benchmark/multi_process.py -c count
+python benchmark/multi_process.py -c cpp
+python benchmark/multi_process.py -c cpp_lock
 
-# python benchmark/infer_cache.py -c static -p 0.1 -t 3 -o testing --use_pinned_mem
-# python benchmark/infer_cache.py -c count -p 0.1 -t 3 -o testing --use_pinned_mem
-# python benchmark/infer_cache.py -c cpp -p 0.1 -t 3 -o testing --use_pinned_mem
+# python benchmark/multi_process.py -c static -b 0.8
+# python benchmark/multi_process.py -c count -b 0.8
+# python benchmark/multi_process.py -c cpp -b 0.8
 
-# python benchmark/infer_cache.py -c static -b 0.8 -p 0.2 -t 3 -o testing --use_pinned_mem
-# python benchmark/infer_cache.py -c count -b 0.8 -p 0.2 -t 3 -o testing --use_pinned_mem
-# python benchmark/infer_cache.py -c cpp -b 0.8 -p 0.2 -t 3 -o testing --use_pinned_mem
-
-# python benchmark/infer_cache.py -c static -p 0.2 -t 3 -o testing --use_pinned_mem
-# python benchmark/infer_cache.py -c count -p 0.2 -t 3 -o testing --use_pinned_mem
-# python benchmark/infer_cache.py -c cpp -p 0.2 -t 3 -o testing --use_pinned_mem
-
-python benchmark/infer_cache.py -c lfu -b 0.8 -p 0.1 -t 3 -o testing --use_pinned_mem
-python benchmark/infer_cache.py -c lfu -p 0.1 -t 3 -o testing --use_pinned_mem
-# python benchmark/infer_cache.py -c lfu -b 0.8 -p 0.2 -t 3 -o testing --use_pinned_mem
-python benchmark/infer_cache.py -c lfu -p 0.2 -t 3 -o testing --use_pinned_mem
 exit
+
+# python benchmark/infer_cache.py -c static -b 0.8 -p 0.1 -t 3 -o trash --use_pinned_mem
+# # python benchmark/infer_cache.py -c count -b 0.8 -p 0.1 -t 3 -o trash --use_pinned_mem
+# # python benchmark/infer_cache.py -c cpp -b 0.8 -p 0.1 -t 3 -o trash --use_pinned_mem
+
+# python benchmark/infer_cache.py -c static -p 0.1 -t 3 -o trash --use_pinned_mem
+# # python benchmark/infer_cache.py -c count -p 0.1 -t 3 -o trash --use_pinned_mem
+# # python benchmark/infer_cache.py -c cpp -p 0.1 -t 3 -o trash --use_pinned_mem
+
+# python benchmark/infer_cache.py -c static -b 0.8 -p 0.2 -t 3 -o trash --use_pinned_mem
+# # python benchmark/infer_cache.py -c count -b 0.8 -p 0.2 -t 3 -o trash --use_pinned_mem
+# # python benchmark/infer_cache.py -c cpp -b 0.8 -p 0.2 -t 3 -o trash --use_pinned_mem
+
+# python benchmark/infer_cache.py -c static -p 0.2 -t 3 -o trash --use_pinned_mem
+# # python benchmark/infer_cache.py -c count -p 0.2 -t 3 -o trash --use_pinned_mem
+# # python benchmark/infer_cache.py -c cpp -p 0.2 -t 3 -o trash --use_pinned_mem
+
+# # python benchmark/infer_cache.py -c lfu -b 0.8 -p 0.1 -t 3 -o testing --use_pinned_mem
+# # python benchmark/infer_cache.py -c lfu -p 0.1 -t 3 -o testing --use_pinned_mem
+# # python benchmark/infer_cache.py -c lfu -b 0.8 -p 0.2 -t 3 -o testing --use_pinned_mem
+# # python benchmark/infer_cache.py -c lfu -p 0.2 -t 3 -o testing --use_pinned_mem
+# exit
 
 while true; do
 python benchmark/infer_cache.py -c baseline -p 0.2 -o fast_sampling --profile
@@ -32,6 +53,7 @@ python benchmark/infer_cache.py -c cpp -p 0.2 -o fast_sampling --profile
 # python benchmark/infer_cache.py -c baseline -b 0.8 -p 0.2 -o fast_sampling --profile
 # python benchmark/infer_cache.py -c baseline -p 0.2 -o fast_sampling --use_pinned_mem --profile
 # python benchmark/infer_cache.py -c baseline -b 0.8 -p 0.2 -o fast_sampling --use_pinned_mem --profile
+# python benchmark/infer_cache.py -c cpp -p 0.2 -o fast_sampling --use_pinned_mem --profile
 done
 
 # # # no pinned memory tests

@@ -1,4 +1,5 @@
 from fast_inference.timer import Timer
+from fast_inference.dataset import FastEdgeRepr
 import torch
 import dgl
 
@@ -8,12 +9,12 @@ class InferenceSampler:
     def __init__(self, g):
         self.g = g
 
-    def sample(self, nids, edges, *, use_gpu_sampling, fix_unique=False):
+    def sample(self, nids, edges, *, use_gpu_sampling, fix_unique=False, device=None):
         # TODO make MFG setup work with any batch size and number of layers
         with Timer('sampling', track_cuda=use_gpu_sampling):
-            if use_gpu_sampling:
+            if use_gpu_sampling and device is None:
                 device = 'cuda'
-            else:
+            elif device is None:
                 device = 'cpu'
             mfgs = []
             batch_size = nids.shape[0]
@@ -33,6 +34,10 @@ class InferenceSampler:
 
                 required_nodes = torch.cat(adj_nids)
                 interleave_count = torch.tensor(sizes)
+            elif type(edges) == FastEdgeRepr:
+                required_nodes = edges.in_edge_endpoints.to(device)
+                interleave_count = edges.in_edge_count.to(device)
+                new_nid = nids.to(device)
             else:
                 # TODO test this batching very carefully
                 # TODO reason to be suspicious: https://github.com/dmlc/dgl/issues/4512
@@ -63,13 +68,17 @@ class InferenceSampler:
             # with Timer('create sampling graph'):
             # Get existing edges in the graph
             u, v = self.g.in_edges(required_nodes_unique)
-            sampling_graph = dgl.graph((u, v), num_nodes=max(self.g.num_nodes(), new_nid.max().item()), device=torch.device('cuda'))
+            sampling_graph = dgl.graph((u, v), num_nodes=max(self.g.num_nodes(), new_nid.max().item()), device=device)
 
             # with Timer('create new edges'):
-            out_interleave_count = torch.tensor([edges[idx]["out"].shape[0] for idx in range(batch_size)], device='cuda')
-            u = torch.repeat_interleave(new_nid, out_interleave_count)
-            v = torch.cat([edges[idx]["out"] for idx in range(batch_size)]).to('cuda')
-    
+            if type(edges) == FastEdgeRepr:
+                u = torch.repeat_interleave(new_nid, edges.out_edge_count.to(device))
+                v = edges.out_edge_endpoints.to(device)
+            else:
+                out_interleave_count = torch.tensor([edges[idx]["out"].shape[0] for idx in range(batch_size)], device=device)
+                u = torch.repeat_interleave(new_nid, out_interleave_count)
+                v = torch.cat([edges[idx]["out"] for idx in range(batch_size)]).to(device)
+        
             # with Timer('update sampling graph with new edges'):
             sampling_graph.add_edges(u, v)
 
@@ -78,7 +87,7 @@ class InferenceSampler:
             if use_gpu_sampling:
                 # NOTE roughly 10x faster
                 assert (self.g.device != torch.device('cpu') or self.g.is_pinned())
-                frontier = dgl.sampling.sample_neighbors(sampling_graph, required_nodes_unique.to('cuda'), -1)
+                frontier = dgl.sampling.sample_neighbors(sampling_graph, required_nodes_unique.to(device), -1)
             else:
                 frontier = dgl.sampling.sample_neighbors(sampling_graph, required_nodes_unique, -1)
 

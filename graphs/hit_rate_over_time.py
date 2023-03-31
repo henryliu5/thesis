@@ -21,6 +21,7 @@ def main(paths, policies, model_name, graph_name, batch_size, file_suffix = ''):
 
     g = sns.lineplot(data=cache_df, x=cache_df.index, y='hit_rate', hue='Cache Policy')
     g.set_title(f'Cache hit rate {suffix} | {model_name} {graph_name} batch size: {batch_size}')
+    g.set_ylabel('Hit Ratio')
     g.set_xlabel('Time (request ID)')
     plt.tight_layout()
     plt.savefig(f'CROT{file_suffix}.png', bbox_inches='tight', dpi=250)
@@ -43,10 +44,9 @@ if __name__ == '__main__':
             f'testing/gpu/pinned/uniform/count_{c}',
             # f'fast_sampling/gpu/pinned/uniform/cpp_{c}', 
             f'testing/gpu/pinned/uniform/cpp_{c}', 
-            f'testing/gpu/pinned/uniform/lfu_{c}',
+            # f'testing/gpu/pinned/uniform/lfu_{c}',
             ],
-            ['static', 'count', 'cpp', 'lfu'],
-            # [f'Static {c*100}%', f'Full Frequency {c*100}%', f'Masked Frequency {c*100}%', 'test'],
+            [f'Static {c*100}%', f'Full Update (Frequency) {c*100}%', f'Incremental Update (Frequency) {c*100}%'],
             'GCN', 'ogbn-products', 256, f'c{c}')
         main([
             # 'benchmark/fast_data/new_cache_gpu_bias_0.8_static',
@@ -57,8 +57,7 @@ if __name__ == '__main__':
             f'testing/gpu/pinned/bias_0.8/count_{c}',
             # f'fast_sampling/gpu/pinned/bias_0.8/cpp_{c}', 
             f'testing/gpu/pinned/bias_0.8/cpp_{c}', 
-            f'testing/gpu/pinned/bias_0.8/lfu_{c}',
+            # f'testing/gpu/pinned/bias_0.8/lfu_{c}',
             ],
-            ['static', 'count', 'cpp', 'lfu'],
-            # [f'Static {c*100}%', f'Full Frequency {c*100}%', f'Masked Frequency {c*100}%', 'test'],
+            [f'Static {c*100}%', f'Full Update (Frequency) {c*100}%', f'Incremental Update (Frequency) {c*100}%'],
             'GCN', 'ogbn-products', 256, f'_biased_c{c}')

@@ -16,21 +16,19 @@ PYBIND11_MODULE(fast_inference_cpp, m)
 {
     m.doc() = "pybind11 example plugin"; // optional module docstring
 
+    m.def("shm_setup", &shmSetup, "Created shared memory resources");
     py::class_<CacheManager>(m, "CacheManager")
-        .def(py::init<const int, const int, const int, const int, const int, bool>())
+        .def(py::init<const int, const int, const int, const int, bool, bool>())
         .def("set_cache", &CacheManager::setCache)
-        .def("incr_counts", &CacheManager::incrementCounts)
-        .def("set_update_frequency", &CacheManager::setUpdateFrequency)
-        .def("set_staging_area_size", &CacheManager::setStagingAreaSize)
         .def("wait_for_queue", &CacheManager::waitForQueue)
         .def("get_counts", &CacheManager::getCounts)
         .def("thread_enter", &CacheManager::threadEnter)
         .def("thread_exit", &CacheManager::threadExit)
-        .def("get_most_common_nodes_not_in_cache", &CacheManager::getMostCommonNodesNotInCache)
-        .def("get_least_used_cache_indices", &CacheManager::getLeastUsedCacheIndices)
-        .def("receive_new_features", &CacheManager::receiveNewFeatures)
+        // .def("receive_new_features", &CacheManager::receiveNewFeatures)
         .def("set_cache_candidates", &CacheManager::setCacheCandidates)
         .def("place_feats_in_queue", &CacheManager::placeFeatsInQueue)
         .def("lock", &CacheManager::lock)
-        .def("unlock", &CacheManager::unlock);
+        .def("unlock", &CacheManager::unlock)
+        .def("read_lock", &CacheManager::readLock)
+        .def("read_unlock", &CacheManager::readUnlock);
 }

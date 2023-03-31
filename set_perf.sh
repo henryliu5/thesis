@@ -8,7 +8,10 @@ do
 done
 
 # Disable SMT
-echo off | sudo tee /sys/devices/system/cpu/smt/control
+# echo off | sudo tee /sys/devices/system/cpu/smt/control
 
 # Disable ASLR
 echo 0 | sudo tee /proc/sys/kernel/randomize_va_space
+
+# Set enough mmap 
+sudo sysctl -w vm.max_map_count=640000
