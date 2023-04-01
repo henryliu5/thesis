@@ -46,7 +46,10 @@ if __name__ == '__main__':
                            help="Number of trials to run")
     args = parser.parse_args()
 
-    num_engines = torch.cuda.device_count()
+    num_devices = torch.cuda.device_count()
+    executors_per_store = 4
+    num_engines = num_devices * executors_per_store
+
     dataset = 'ogbn-products'
     batch_size = 256
     max_iters = 512000
@@ -111,30 +114,31 @@ if __name__ == '__main__':
     model.eval()
 
     num_nodes = g.num_nodes()
-    feature_stores = create_feature_stores(cache_type, num_engines, g, ['feat'], cache_percent, use_pinned_mem, profile_hit_rate=True, pinned_buf_size=1_000_000)
+    feature_stores = create_feature_stores(cache_type, num_devices, executors_per_store, g, ['feat'], cache_percent, use_pinned_mem, profile_hit_rate=True, pinned_buf_size=1_000_000)
 
     logical_g = dgl.graph(g.edges())
 
     engines = []
     # t = torch.ones(3, device='cuda')
-    for device_id in range(num_engines):
-        # engines.append(CUDATest(t, device_id))
-        # engines[-1].start()
-        print('Creating InferenceEngine for device_id:', device_id)
-        engine = InferenceEngine(request_queue=request_queue,
-                                response_queue=response_queue,
-                                start_barrier=start_barrier,
-                                finish_barrier=finish_barrier,
-                                trial_barriers=trial_barriers,
-                                num_engines=num_engines,
-                                device=torch.device('cuda', device_id),
-                                feature_store=feature_stores[device_id],
-                                logical_g = logical_g,
-                                model=model,
-                                # Benchmarking info
-                                dataset=dataset, model_name=model_name, batch_size=batch_size, output_path=trial_dir)
-        engine.start()
-        engines.append(engine)
+    for device_id in range(num_devices):
+        for executor_id in range(executors_per_store):
+            # engines.append(CUDATest(t, device_id))
+            # engines[-1].start()
+            print('Creating InferenceEngine for device_id:', device_id)
+            engine = InferenceEngine(request_queue=request_queue,
+                                    response_queue=response_queue,
+                                    start_barrier=start_barrier,
+                                    finish_barrier=finish_barrier,
+                                    trial_barriers=trial_barriers,
+                                    num_engines=num_engines,
+                                    device=torch.device('cuda', device_id),
+                                    feature_store=feature_stores[device_id][executor_id],
+                                    logical_g = logical_g,
+                                    model=model,
+                                    # Benchmarking info
+                                    dataset=dataset, model_name=model_name, batch_size=batch_size, output_path=trial_dir)
+            engine.start()
+            engines.append(engine)
 
     # engines[0].incr()
     # engines[1].decr()

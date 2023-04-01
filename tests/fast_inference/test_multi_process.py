@@ -42,7 +42,7 @@ class PipelinedDataloader(Process):
         use_prof = False
         enable_timers()
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
-            for i in tqdm(range(20_000), disable=self.device.index != 0):
+            for i in tqdm(range(20_000), disable=self.device.index != 0 or not self.feature_store.is_leader):
                 requested = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
 
                 if i % 10 == 0:
@@ -67,18 +67,21 @@ class PipelinedDataloader(Process):
 
 
 def _check_multiprocess_correctness(policy):
-    num_engines = 2
+    num_devices = torch.cuda.device_count()
+    num_executors_per_store = 2
+    num_engines = num_devices * num_executors_per_store
 
     num_nodes = 2_000_000
     g = dgl.graph((torch.zeros(num_nodes, dtype=torch.long), torch.arange(num_nodes, dtype=torch.long)), num_nodes=num_nodes)
     expected_feats = torch.randn(num_nodes, 5)
     g.ndata['feat'] = expected_feats
 
-    feature_stores = create_feature_stores(policy, num_engines, 1, g, ['feat'], 0.2, True, profile_hit_rate=True, pinned_buf_size=1_000_000)
+    feature_stores = create_feature_stores(policy, num_devices, num_executors_per_store, g, ['feat'], 0.2, True, profile_hit_rate=True, pinned_buf_size=1_000_000)
 
     dl_processes = []
-    for i in range(num_engines):
-        dl_processes.append(PipelinedDataloader(feature_stores[i], torch.device('cuda', i), num_nodes, expected_feats))
+    for i in range(num_devices):
+        for j in range(num_executors_per_store):
+            dl_processes.append(PipelinedDataloader(feature_stores[i][j], torch.device('cuda', i), num_nodes, expected_feats))
         
     [p.start() for p in dl_processes]
     [p.join() for p in dl_processes]
@@ -101,5 +104,5 @@ def test_static_race():
 
 if __name__ == '__main__':
     # _check_multiprocess_correctness('static')
-    _check_multiprocess_correctness('cpp')
-    # _check_multiprocess_correctness('cpp_lock')
+    # _check_multiprocess_correctness('cpp')
+    _check_multiprocess_correctness('cpp_lock')
