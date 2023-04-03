@@ -44,10 +44,14 @@ if __name__ == '__main__':
     
     parser.add_argument('-t', '--trials', type=int, default=1,
                            help="Number of trials to run")
+    parser.add_argument('-e', '--executors_per_store', type=int, default=4,
+                            help="Number of executors per feature store")
+    parser.add_argument('-g', '--gpus', type=int, default=torch.cuda.device_count(),
+                            help="Number of feature stores")
     args = parser.parse_args()
 
-    num_devices = torch.cuda.device_count()
-    executors_per_store = 4
+    num_devices = args.gpus
+    executors_per_store = args.executors_per_store
     num_engines = num_devices * executors_per_store
 
     dataset = 'ogbn-products'
@@ -90,7 +94,7 @@ if __name__ == '__main__':
     # trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
     # print('Creating fast edges done in', time.time() - s)
 
-    request_queue = Queue(num_engines)
+    request_queue = Queue(2 * num_engines)
     response_queue = Queue()
     # # Request generator + Inference Engines + Response recipient
     start_barrier = Barrier(2 + num_engines)
@@ -102,7 +106,7 @@ if __name__ == '__main__':
                                          trace=trace, batch_size=batch_size, max_iters=max_iters, rate=0, trials=num_trials)
     request_generator.start()
     response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
-                                           num_engines=num_engines,
+                                           num_engines=num_engines, num_devices=num_devices, executors_per_store=executors_per_store,
                                             dataset=dataset, model_name=model_name, batch_size=batch_size, output_path=trial_dir)
     response_recipient.start()
 

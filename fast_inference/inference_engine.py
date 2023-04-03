@@ -84,6 +84,8 @@ class InferenceEngine(Process):
             with torch.cuda.device(self.device): # needed to set timers on correct device
                 while True:
                     req = self.request_queue.get()
+                    if req.req_type == RequestType.RESET:
+                        print('engine', self.device_id, 'received reset')
                     req.time_exec_started = time.perf_counter()
 
                     if requests_handled % update_window == 0:
