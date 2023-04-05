@@ -37,7 +37,8 @@ def main(paths, model_name, graph_name, batch_size, file_suffix='', policy_names
         f'Request latency CDF {suffix} | {model_name} {graph_name} batch size: {batch_size}')
     
     if 'pin' in file_suffix:
-        plt.xlim(0, 100)
+        # plt.xlim(0, 100)
+        pass
     else:
         plt.xlim(0, 100)
     plt.tight_layout()
@@ -70,22 +71,22 @@ if __name__ == '__main__':
         for c in cache_ratios:
             main([
                 #  f'testing/gpu/{pin}bias_0.8/baseline',
-                f'multi_testing/gpu/{pin}bias_0.8/static_{c}',
-                f'multi_testing/gpu/{pin}bias_0.8/count_{c}',
-                f'multi_testing/gpu/{pin}bias_0.8/cpp_{c}',
-                f'multi_testing/gpu/{pin}bias_0.8/cpp_lock_{c}',
-                # f'testing/gpu/{pin}bias_0.8/lfu_{c}',
-                # f'testing/gpu/{pin}bias_0.8/hybrid_{c}',
+                f'throughput_testing/gpu/{pin}bias_0.8/static_{c}',
+                f'throughput_testing/gpu/{pin}bias_0.8/count_{c}',
+                f'throughput_testing/gpu/{pin}bias_0.8/cpp_{c}',
+                # f'throughput_testing/gpu/{pin}bias_0.8/cpp_lock_{c}',
+                # f'throughput_testing/gpu/{pin}bias_0.8/lfu_{c}',
+                # f'throughput_testing/gpu/{pin}bias_0.8/hybrid_{c}',
                 ], 'GCN', 'ogbn-products', 256, f'_bias_{pin_stripped}c{c}', [f'Static {c*100}%', f'Full Update (Frequency) {c*100}%', f'Incremental Update (Frequency) {c*100}%', 'LFU'])
 
             main([
-                #  f'testing/gpu/{pin}uniform/baseline',
-                f'multi_testing/gpu/{pin}uniform/static_{c}',
-                f'multi_testing/gpu/{pin}uniform/count_{c}',
-                f'multi_testing/gpu/{pin}uniform/cpp_{c}',
-                f'multi_testing/gpu/{pin}uniform/cpp_lock_{c}',
-                # f'testing/gpu/{pin}uniform/lfu_{c}',
-                # f'testing/gpu/{pin}uniform/hybrid_{c}',
+                #  f'throughput_testing/gpu/{pin}uniform/baseline',
+                f'throughput_testing/gpu/{pin}uniform/static_{c}',
+                f'throughput_testing/gpu/{pin}uniform/count_{c}',
+                f'throughput_testing/gpu/{pin}uniform/cpp_{c}',
+                # f'throughput_testing/gpu/{pin}uniform/cpp_lock_{c}',
+                # f'throughput_testing/gpu/{pin}uniform/lfu_{c}',
+                # f'throughput_testing/gpu/{pin}uniform/hybrid_{c}',
                 ], 'GCN', 'ogbn-products', 256, f'_uniform_{pin_stripped}c{c}', [f'Static {c*100}%', f'Full Update (Frequency) {c*100}%', f'Incremental Update (Frequency) {c*100}%', 'LFU'])
 
 

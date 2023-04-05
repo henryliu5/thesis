@@ -18,17 +18,14 @@ PYBIND11_MODULE(fast_inference_cpp, m)
 
     m.def("shm_setup", &shmSetup, "Created shared memory resources");
     py::class_<CacheManager>(m, "CacheManager")
-        .def(py::init<const int, const int, const int, const int, bool, bool>())
+        .def(py::init<const int, const int, const int, const int, bool, bool, const int, const int>())
         .def("set_cache", &CacheManager::setCache)
         .def("wait_for_queue", &CacheManager::waitForQueue)
-        .def("get_counts", &CacheManager::getCounts)
         .def("thread_enter", &CacheManager::threadEnter)
         .def("thread_exit", &CacheManager::threadExit)
         // .def("receive_new_features", &CacheManager::receiveNewFeatures)
         .def("set_cache_candidates", &CacheManager::setCacheCandidates)
         .def("place_feats_in_queue", &CacheManager::placeFeatsInQueue)
-        .def("lock", &CacheManager::lock)
-        .def("unlock", &CacheManager::unlock)
         .def("read_lock", &CacheManager::readLock)
         .def("read_unlock", &CacheManager::readUnlock);
 }

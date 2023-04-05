@@ -40,20 +40,20 @@ if __name__ == '__main__':
     # cache_ratios = [0.05, 0.025]
     for c in cache_ratios:
         main([
-            f'multi_testing/gpu/pinned/uniform/static_{c}',
-            f'multi_testing/gpu/pinned/uniform/count_{c}',
-            f'multi_testing/gpu/pinned/uniform/cpp_{c}', 
-            f'multi_testing/gpu/pinned/uniform/cpp_lock_{c}', 
+            f'testing/gpu/pinned/uniform/static_{c}',
+            f'testing/gpu/pinned/uniform/count_{c}',
+            f'testing/gpu/pinned/uniform/cpp_{c}', 
+            # f'testing/gpu/pinned/uniform/cpp_lock_{c}', 
             # f'testing/gpu/pinned/uniform/cpp_{c}', 
             # f'testing/gpu/pinned/uniform/lfu_{c}',
             ],
             [f'Static {c*100}%', f'Full Update (Frequency) {c*100}%', f'Incremental Update (Frequency) {c*100}%', 'LFU'],
             'GCN', 'ogbn-products', 256, f'c{c}')
         main([
-            f'multi_testing/gpu/pinned/bias_0.8/static_{c}',
-            f'multi_testing/gpu/pinned/bias_0.8/count_{c}',
-            f'multi_testing/gpu/pinned/bias_0.8/cpp_{c}', 
-            f'multi_testing/gpu/pinned/bias_0.8/cpp_lock_{c}', 
+            f'throughput_testing/gpu/pinned/bias_0.8/static_{c}',
+            f'throughput_testing/gpu/pinned/bias_0.8/count_{c}',
+            f'throughput_testing/gpu/pinned/bias_0.8/cpp_{c}', 
+            # f'testing/gpu/pinned/bias_0.8/cpp_lock_{c}', 
             ],
             [f'Static {c*100}%', f'Full Update (Frequency) {c*100}%', f'Incremental Update (Frequency) {c*100}%', 'LFU'],
             'GCN', 'ogbn-products', 256, f'_biased_c{c}')

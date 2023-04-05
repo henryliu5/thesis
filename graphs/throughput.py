@@ -49,6 +49,16 @@ if __name__ == '__main__':
         for c in cache_ratios:
             main([
                 #  f'testing/gpu/{pin}uniform/baseline',
+                f'throughput_testing/gpu/{pin}bias_0.8/static_{c}',
+                f'throughput_testing/gpu/{pin}bias_0.8/count_{c}',
+                f'throughput_testing/gpu/{pin}bias_0.8/cpp_{c}',
+                f'throughput_testing/gpu/{pin}bias_0.8/cpp_lock_{c}',
+                # f'testing/gpu/{pin}bias_0.8/lfu_{c}',
+                # f'testing/gpu/{pin}bias_0.8/hybrid_{c}',
+                ], 'GCN', 'ogbn-products', 256, f'_bias_0.8_{pin_stripped}c{c}', ['static', 'count', 'Lock-free', 'R/W Lock'])
+
+            main([
+                #  f'testing/gpu/{pin}uniform/baseline',
                 f'throughput_testing/gpu/{pin}uniform/static_{c}',
                 f'throughput_testing/gpu/{pin}uniform/count_{c}',
                 f'throughput_testing/gpu/{pin}uniform/cpp_{c}',

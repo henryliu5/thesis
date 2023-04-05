@@ -45,8 +45,8 @@ def plot_speedup(model_name, cache_path, baseline_path, title = ""):
         plt.clf()
 
 if __name__ == '__main__':
-    cache_path = 'benchmark/data/new_cache_slow_gpu'
-    baseline_path = 'benchmark/data/new_baseline_gpu'
+    cache_path = 'testing/gpu/pinned/bias_0.8/cpp_0.2'
+    baseline_path = 'testing/gpu/pinned/bias_0.8/static_0.2'
     plot_speedup('GCN', cache_path, baseline_path, title="(GPU sampling, 20% static cache)")
     # plot_latency_breakdown('SAGE')
     # plot_latency_breakdown('GAT')

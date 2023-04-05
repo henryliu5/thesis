@@ -50,7 +50,7 @@ class InferenceEngine(Process):
     def run(self):
         numa_info = get_numa_nodes_cores()
         # Pin just to first cpu in each core in numa node 0 (DGL approach)
-        pin_cores = [cpus[0] for core_id, cpus in numa_info[0]]
+        pin_cores = [cpus[0] for core_id, cpus in numa_info[self.device_id % 2]]
         psutil.Process().cpu_affinity(pin_cores)
         print(f'engine {self.device_id}, cpu affinity', psutil.Process().cpu_affinity())
 

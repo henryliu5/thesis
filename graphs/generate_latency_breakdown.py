@@ -6,7 +6,7 @@ plt.style.use('seaborn')
 import os
 
 def plot_latency_breakdown(model_name, graph_names, path, title = ""):
-    batch_sizes = [1, 64, 128, 256]
+    batch_sizes = [256]
 
     dfs = []
     for name in graph_names:
@@ -104,7 +104,7 @@ if __name__ == '__main__':
     # path = 'benchmark/data/new_baseline'
     # title = ""
 
-    names = ['reddit', 'cora', 'ogbn-products']
+    names = ['ogbn-products']
     path = 'benchmark/data/new_cache_gpu'
     title = "(GPU sampling, 20% static cache)"
 
