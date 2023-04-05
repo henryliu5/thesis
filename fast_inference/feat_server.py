@@ -75,11 +75,11 @@ class FeatureServer:
             peer = self.peers[i]
 
             with torch.cuda.stream(self.peer_streams[i]):
-                if len(self.peers) > 1:
-                    s = time.perf_counter()
-                    self.sync_cache_read_start(i)
-                    dur += time.perf_counter() - s
+                s = time.perf_counter()
+                self.sync_cache_read_start(i)
+                dur += time.perf_counter() - s
 
+                if len(self.peers) > 1:
                     # Only transfer node ids that belong to that GPU
                     # peer_mask = gpu_mask & (node_ids % num_peers == i)
                     #! TODO figure out a way to possibly not transfer all nids (makes masking weird because dim 0 is reduced)
@@ -101,8 +101,7 @@ class FeatureServer:
                 result_features.append(peer.cache[feat][mapping].to(self.device))
                 peer_mask = peer_mask.to(self.device)
 
-                if len(self.peers) > 1:
-                    self.sync_cache_read_end(i)
+                self.sync_cache_read_end(i)
 
             result_masks.append(peer_mask)
 
@@ -299,8 +298,10 @@ class CountingFeatServer(FeatureServer):
             self.update_stream = torch.cuda.Stream(device=self.device)
 
         with torch.cuda.stream(self.update_stream):
+            self.peer_lock[self.device_index].acquire()
+            torch.cuda.synchronize()
+
             if len(self.peers) > 1:
-                self.peer_lock[self.device_index].acquire()
                 # total_counts = functools.reduce(torch.add, [peer.counts.to(self.device) for peer in self.peers])
                 # big_graph_arange = torch.arange(self.num_nodes, device=self.device)
                 # part_nids = big_graph_arange[big_graph_arange % len(self.peers) == self.device_index]
@@ -342,8 +343,8 @@ class CountingFeatServer(FeatureServer):
             self.nid_is_on_gpu.copy_(most_common_mask)
             self.cache_mapping[~most_common_mask] = -1
 
-            if len(self.peers) > 1:
-                self.peer_lock[self.device_index].release()
+            torch.cuda.synchronize()
+            self.peer_lock[self.device_index].release()
 
             torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
             
@@ -375,6 +376,7 @@ class CountingFeatServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
+        torch.cuda.synchronize()
         self.peer_lock[index].acquire()
 
     def sync_cache_read_end(self, index: int):
@@ -383,6 +385,7 @@ class CountingFeatServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
+        torch.cuda.synchronize()
         self.peer_lock[index].release()
     
 class LFUServer(FeatureServer):
