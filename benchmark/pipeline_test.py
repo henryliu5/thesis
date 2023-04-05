@@ -37,7 +37,7 @@ class PipelinedDataloader(Process):
         for k, v in self.feature_store.pinned_buf_dict.items():
             self.feature_store.pinned_buf_dict[k] = v.pin_memory()
 
-        use_prof = True
+        use_prof = False
         enable_timers()
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
             for i in range(500):
@@ -54,7 +54,8 @@ class PipelinedDataloader(Process):
         print('Lock conflicts', self.feature_store.lock_conflicts)
 
 if __name__ == '__main__':
-    num_engines = 2
+    num_stores = 2
+    num_executors_per_store = 2
     device = torch.device('cuda', 0)
 
     num_nodes = 2_000_000
@@ -62,11 +63,12 @@ if __name__ == '__main__':
     x_feats = torch.randn(num_nodes, 100)
     g.ndata['feat'] = x_feats
 
-    feature_stores = create_feature_stores('cpp_lock', num_engines, g, ['feat'], 0.2, True, profile_hit_rate=True, pinned_buf_size=1_000_000)
+    feature_stores = create_feature_stores('cpp_lock', num_stores, 2, g, ['feat'], 0.2, True, profile_hit_rate=True, pinned_buf_size=1_000_000)
 
     dl_processes = []
-    for i in range(num_engines):
-        dl_processes.append(PipelinedDataloader(feature_stores[i], torch.device('cuda', i), num_nodes))
+    for i in range(num_stores):
+        for j in range(num_executors_per_store):
+            dl_processes.append(PipelinedDataloader(feature_stores[i][j], torch.device('cuda', i), num_nodes))
         
     [p.start() for p in dl_processes]
     [p.join() for p in dl_processes]

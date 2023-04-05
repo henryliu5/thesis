@@ -50,7 +50,7 @@ class InferenceEngine(Process):
     def run(self):
         numa_info = get_numa_nodes_cores()
         # Pin just to first cpu in each core in numa node 0 (DGL approach)
-        pin_cores = [cpus[0] for core_id, cpus in numa_info[0]]
+        pin_cores = [cpus[0] for core_id, cpus in numa_info[self.device_id % 2]]
         psutil.Process().cpu_affinity(pin_cores)
         print(f'engine {self.device_id}, cpu affinity', psutil.Process().cpu_affinity())
 
@@ -84,6 +84,8 @@ class InferenceEngine(Process):
             with torch.cuda.device(self.device): # needed to set timers on correct device
                 while True:
                     req = self.request_queue.get()
+                    if req.req_type == RequestType.RESET:
+                        print('engine', self.device_id, 'received reset')
                     req.time_exec_started = time.perf_counter()
 
                     if requests_handled % update_window == 0:

@@ -16,7 +16,8 @@ class FeatureServer:
                  profile_hit_rate: bool = False,
                  pinned_buf_size: int = 150_000,
                  peer_lock = None,
-                 use_locking = False):
+                 use_locking = False,
+                 is_leader: bool = True):
         """ Initializes a new FeatureServer
 
         Args:
@@ -51,6 +52,7 @@ class FeatureServer:
         self.peer_lock = peer_lock
         self.lock_conflicts = 0
         self.use_locking = use_locking
+        self.is_leader = is_leader
 
     def set_peer_group(self, peers):
         self.peers = peers
@@ -72,26 +74,24 @@ class FeatureServer:
         for i in range(num_peers):
             peer = self.peers[i]
 
-            if len(self.peers) > 1:
-                s = time.perf_counter()
-                self.sync_cache_read_start(i)
-                dur += time.perf_counter() - s
-
-                # Only transfer node ids that belong to that GPU
-                # peer_mask = gpu_mask & (node_ids % num_peers == i)
-                #! TODO figure out a way to possibly not transfer all nids (makes masking weird because dim 0 is reduced)
-                node_ids_peer = node_ids.to(peer.device)
-                peer_mask = peer.nid_is_on_gpu[node_ids_peer]
-                peer_nids = node_ids_peer[peer_mask]
-            else:
-                peer_mask = self.nid_is_on_gpu[node_ids]
-                peer_nids = node_ids[peer_mask]
-
-            torch.cuda.current_stream().synchronize() # Must explicitly wait for nids to reach peer
-
             with torch.cuda.stream(self.peer_streams[i]):
-                mapping = peer.cache_mapping[peer_nids]
+                if len(self.peers) > 1:
+                    s = time.perf_counter()
+                    self.sync_cache_read_start(i)
+                    dur += time.perf_counter() - s
 
+                    # Only transfer node ids that belong to that GPU
+                    # peer_mask = gpu_mask & (node_ids % num_peers == i)
+                    #! TODO figure out a way to possibly not transfer all nids (makes masking weird because dim 0 is reduced)
+                    node_ids_peer = node_ids.to(peer.device)
+                    peer_mask = peer.nid_is_on_gpu[node_ids_peer]
+                    peer_nids = node_ids_peer[peer_mask]
+                else:
+                    peer_mask = self.nid_is_on_gpu[node_ids]
+                    peer_nids = node_ids[peer_mask]
+
+                mapping = peer.cache_mapping[peer_nids]
+                
                 if len(self.peers) > 1:
                     assert(peer.nid_is_on_gpu.is_shared())
                     assert(peer.cache_mapping.is_shared())
@@ -225,7 +225,10 @@ class FeatureServer:
             self.cache_size, device=self.device)
 
         for feat in feats:
+            print('feautres are shared', self.features[feat].is_shared())
             self.cache[feat] = self.features[feat][node_ids].to(self.device)
+            print('**************resetting original cache*****************')
+            assert(self.cache[feat].is_shared())
 
     def export_profile(self, path, current_config):
         if self.profile:
@@ -286,6 +289,9 @@ class CountingFeatServer(FeatureServer):
         pass
 
     def update_cache(self, feats):
+        if not self.is_leader:
+            return
+
         assert(self.nid_is_on_gpu.is_shared())
         assert(self.cache_mapping.is_shared())
         if self.update_stream is None:
@@ -353,7 +359,8 @@ class CountingFeatServer(FeatureServer):
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
         with Timer('update counts'):
-            self.counts[node_ids] += 1
+            if self.is_leader:
+                self.counts[node_ids] += 1
 
         return super().get_features(node_ids, feats, mfgs)
     
@@ -462,25 +469,8 @@ class ManagedCacheServer(FeatureServer):
         self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, self.device_index, len(self.peers), True, self.use_locking)
 
     def set_static_cache(self, node_ids: torch.Tensor, feats: List[str]):
-        """Define a static cache using the given node ids.
-
-        Args:
-            node_ids (torch.Tensor): Elements should be node ids whose features are to be cached in GPU memory.
-            feats (List[str]): List of strings corresponding to feature keys that should be cached.
-        """
-        self.cache_size = node_ids.shape[0]
-        # Reset all
-        self.nid_is_on_gpu[:] = False
-        self.nid_is_on_gpu[node_ids] = True
-        self.cache_mapping[node_ids] = torch.arange(
-            self.cache_size, device=self.device)
-
+        super().set_static_cache(node_ids, feats)
         self.reverse_mapping = node_ids
-        for feat in feats:
-            self.cache[feat] = self.features[feat][node_ids].to(self.device)
-
-            # TODO support more than 1 featuer type
-            break
 
     def start_manager(self):
         for feat in self.cache:
@@ -490,6 +480,9 @@ class ManagedCacheServer(FeatureServer):
             break
 
     def compute_topk(self):
+        if not self.is_leader:
+            return
+        
         if self.topk_stream is None:
             self.topk_stream = torch.cuda.Stream(device=self.device)
         if self.update_stream is None:
@@ -541,7 +534,8 @@ class ManagedCacheServer(FeatureServer):
         """
         gpu_nids = node_ids
         with Timer('update counts'):
-            self.counts[gpu_nids] += 1
+            if self.is_leader:
+                self.counts[gpu_nids] += 1
 
         if mfgs is None:
             mfgs = []
@@ -573,6 +567,7 @@ class ManagedCacheServer(FeatureServer):
                 self.profile_info['hit_rate'].append(cache_hits / node_ids.shape[0])
 
             for feat in feats:
+                assert(self.cache_size == self.cache[feat].shape[0])
                 feat_shape = list(self.features[feat].shape[1:])
                 with Timer('allocate res tensor', track_cuda = True):
                     # Create tensor with shape [number of nodes] x feature shape to hold result
@@ -635,7 +630,8 @@ class ManagedCacheServer(FeatureServer):
                         # !! WARNING: Must use "m" here!! Since the node ids and mask are on GPU, the CPU node id tensor
                         # !! must be fully materialized by the time the tensor is placed on the queue
 
-                        self.cache_manager.place_feats_in_queue(cpu_feats, m)
+                        if self.is_leader:
+                            self.cache_manager.place_feats_in_queue(cpu_feats, m)
 
                         # # Can comment in below and comment out above to use syncrhonous update (async in stream)
                         # with torch.cuda.stream(self.update_stream):
@@ -676,6 +672,14 @@ class ManagedCacheServer(FeatureServer):
                         #     self.nid_is_on_gpu[nids_to_add] = True
 
         return res, mfgs
+
+    def reset_cache(self):
+        super().reset_cache()
+        self.counts *= 0
+        self.set_static_cache(self.original_cache_indices, list(self.cache.keys()))
+        for feat in self.cache:
+            self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, 
+                                self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
 
     def sync_cache_read_start(self, index: int):
         """Perform necessary synchronization to begin reading consistent cache state

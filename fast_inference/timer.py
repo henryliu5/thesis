@@ -90,8 +90,9 @@ def export_dict_as_pd(export_dict, path, current_config: Dict[str, Any], ignore_
     if 'id' in df.columns:
         df.sort_values('id')
 
-    # Drop first n: https://sparkbyexamples.com/pandas/pandas-drop-first-n-rows-from-dataframe/
-    df = df.tail(-ignore_first_n)
+    if ignore_first_n != 0:
+        # Drop first n: https://sparkbyexamples.com/pandas/pandas-drop-first-n-rows-from-dataframe/
+        df = df.tail(-ignore_first_n)
 
     # Add keys as new columns, v is constant value
     for k, v in current_config.items():

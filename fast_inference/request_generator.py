@@ -63,16 +63,19 @@ class RequestGenerator(Process):
         n = len(self.trace)
 
         # Warmup batches
-        for i in tqdm(range(0, min(n, 5 * self.batch_size), self.batch_size)):
-            with Timer('send batch'):
-                if i + self.batch_size >= n:
-                    continue
-                nids = self.trace.nids[i:i+self.batch_size]
-                features = self.trace.features[i:i+self.batch_size]
-                edges = self.trace.edges.get_batch(i, i + self.batch_size)
+        WARMUPS = 3
+        print('Doing warmups...')
+        for _ in range(WARMUPS):
+            for i in tqdm(range(0, min(n, 500 * self.batch_size), self.batch_size)):
+                with Timer('send batch'):
+                    if i + self.batch_size >= n:
+                        continue
+                    nids = self.trace.nids[i:i+self.batch_size]
+                    features = self.trace.features[i:i+self.batch_size]
+                    edges = self.trace.edges.get_batch(i, i + self.batch_size)
 
-                req = Request(nids, features, edges, i, None, RequestType.WARMUP, time.perf_counter())
-                self.request_queue.put(req)
+                    req = Request(nids, features, edges, i, None, RequestType.WARMUP, time.perf_counter())
+                    self.request_queue.put(req)
         time.sleep(2)
         
         for trial in range(self.trials):
@@ -92,8 +95,14 @@ class RequestGenerator(Process):
                     req = Request(nids, features, edges, i, trial, RequestType.INFERENCE, time.perf_counter())
                     self.request_queue.put(req)
 
+            # Send out resets
             for i in range(self.num_engines):
+                print('sending reset', i)
                 self.request_queue.put(Request(None, None, None, None, None, RequestType.RESET, None))
+
+            while not self.request_queue.empty():
+                print('request queue not empty', self.request_queue.qsize())
+                
             self.trial_barriers[trial].wait()
 
         # Need to have different shutdown mechanism
@@ -105,7 +114,7 @@ class RequestGenerator(Process):
 from fast_inference.timer import TRACES
 
 class ResponseRecipient(Process):
-    def __init__(self, response_queue: Queue, start_barrier: Barrier, finish_barrier: Barrier, trial_barriers: Barrier, num_engines: int, dataset, model_name, batch_size, output_path):
+    def __init__(self, response_queue: Queue, start_barrier: Barrier, finish_barrier: Barrier, trial_barriers: Barrier, num_engines: int, num_devices:int, executors_per_store, dataset, model_name, batch_size, output_path):
         super().__init__()
         self.response_queue = response_queue
         self.start_barrier = start_barrier
@@ -118,6 +127,8 @@ class ResponseRecipient(Process):
         self.model_name = model_name
         self.batch_size = batch_size
         self.output_path = output_path
+        self.num_devices = num_devices
+        self.executors_per_store = executors_per_store
     
     def run(self):
         torch.set_num_threads(1)
@@ -158,7 +169,7 @@ class ResponseRecipient(Process):
                     print('reqsuests handled', len(TRACES['total']))
                     print('avg handle time', (sum(TRACES['total']) / len(TRACES['total'])))
                     print('--------------throughput', throughput)
-                    # export_dict_as_pd({'throughput (req/s)': }, f'{self.output_path}/{self.model_name.upper()}/throughput', {'name': self.dataset, 'batch_size': self.batch_size, 'trial': cur_trial, 'num_engines': self.num_engines})
+                    export_dict_as_pd({'throughput (req/s)': [throughput]}, f'{self.output_path}/{self.model_name.upper()}_throughput', {'name': self.dataset, 'batch_size': self.batch_size, 'trial': cur_trial, 'num_devices': self.num_devices, 'executors_per_store': self.executors_per_store}, ignore_first_n=0)
 
                     clear_timers()
         
