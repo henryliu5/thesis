@@ -54,10 +54,11 @@ if __name__ == '__main__':
     executors_per_store = args.executors_per_store
     num_engines = num_devices * executors_per_store
 
+    MULTIPLIER = 2
     dataset = 'ogbn-products'
     batch_size = 256
     max_iters = 512000
-    infer_percent = 0.1
+    infer_percent = 0.1 * MULTIPLIER
     model_name = 'gcn'
     subgraph_bias = args.subgraph_bias
     cache_percent = 0.2
@@ -81,7 +82,7 @@ if __name__ == '__main__':
 
     infer_data = InferenceDataset(
         dataset, infer_percent, partitions=5, force_reload=False, verbose=True)
-    trace = infer_data.create_inference_trace(subgraph_bias=subgraph_bias)
+    trace = infer_data.create_inference_trace(trace_len=256000 * MULTIPLIER, subgraph_bias=subgraph_bias)
 
     # s = time.time()
     # in_edge_count = torch.tensor([edge["in"].shape[0] for edge in trace.edges])
