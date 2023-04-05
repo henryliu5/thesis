@@ -84,10 +84,12 @@ def load_df_throughput(model_name: str, path: str, graph_name: str, batch_size: 
 
     DROP_NUM = 1
 
+    num_trials = df['trial'].max()
+
     # Drop lowest and highest
-    df = df.groupby(['num_devices', 'executors_per_store'])['throughput (req/s)'].nlargest(8).reset_index(level=2, drop=True)
+    df = df.groupby(['num_devices', 'executors_per_store'])['throughput (req/s)'].nlargest(num_trials - 1).reset_index(level=2, drop=True)
     df = df.reset_index()
-    df = df.groupby(['num_devices', 'executors_per_store'])['throughput (req/s)'].nsmallest(6).reset_index(level=2, drop=True)
+    df = df.groupby(['num_devices', 'executors_per_store'])['throughput (req/s)'].nsmallest(num_trials - 2).reset_index(level=2, drop=True)
     return df.to_frame()
 
 def load_dfs(model_name: str, path: str, graph_names: List[str], batch_sizes: List[int]) -> pd.DataFrame: 
