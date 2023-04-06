@@ -35,6 +35,8 @@ class PipelinedDataloader(Process):
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
 
+        print(self.feature_store.cache['feat'].is_shared())
+
         # Need to re-pin the feature store buffer
         for k, v in self.feature_store.pinned_buf_dict.items():
             self.feature_store.pinned_buf_dict[k] = v.pin_memory()
@@ -104,5 +106,6 @@ def test_static_race():
 
 if __name__ == '__main__':
     # _check_multiprocess_correctness('static')
-    # _check_multiprocess_correctness('cpp')
-    _check_multiprocess_correctness('cpp_lock')
+    # _check_multiprocess_correctness('count')
+    _check_multiprocess_correctness('cpp')
+    # _check_multiprocess_correctness('cpp_lock')

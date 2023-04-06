@@ -147,17 +147,32 @@ public:
 
 using namespace boost::interprocess;
 
-void shmSetup(int num_devices){
+std::string atomic_start_name(int target_store_id, int reader_store_id, int reader_executor_id){
+    return "fast_inference_atomic_gpu_" + std::to_string(target_store_id) + "_store_" + std::to_string(reader_store_id) + "_executor_" + std::to_string(reader_executor_id) + "start";
+}
+
+std::string atomic_finish_name(int target_store_id, int reader_store_id, int reader_executor_id){
+    return "fast_inference_atomic_gpu_" + std::to_string(target_store_id) + "_store_" + std::to_string(reader_store_id) + "_executor_" + std::to_string(reader_executor_id) + "finish";
+}
+
+void shmSetup(int num_stores, int executors_per_store){
     shared_memory_object::remove("fast_inference_shared_mem");
     managed_shared_memory segment(create_only, "fast_inference_shared_mem", 65536);
 
-    for(int i = 0; i < num_devices; i++){
-        // cout << "Cleaning up and creating new named mutexes" << endl;
-        // named_sharable_mutex::remove(("fast_inference_mutex_gpu_" + std::to_string(i)).c_str());
-        // named_sharable_mutex(create_only, ("fast_inference_mutex_gpu_" + std::to_string(i)).c_str());
+    for(int i = 0; i < num_stores; i++){
         auto lock_name = ("fast_inference_mutex_gpu_" + std::to_string(i)).c_str();
         cout << "Constructing lock: " << lock_name << endl;
         segment.construct<interprocess_sharable_mutex>(lock_name)();
+
+        for(int j = 0; j < num_stores; j++){
+            for(int k = 0; k < executors_per_store; k++){
+                auto start_name = atomic_start_name(i, j, k).c_str();
+                segment.construct<std::atomic<int>>(start_name)(0);
+
+                auto finish_name = atomic_finish_name(i, j, k).c_str();
+                segment.construct<std::atomic<int>>(finish_name)(0);
+            }
+        }
     }
 }
 
@@ -195,17 +210,20 @@ private:
     managed_shared_memory segment;
     bool use_locking;
 
+    std::vector<std::vector<std::atomic<int>*>> start_atomics;
+    std::vector<std::vector<std::atomic<int>*>> finish_atomics;
+    int total_stores;
+    int executors_per_store;
+
+    std::vector<std::vector<std::vector<std::atomic<int>*>>> all_start_atomics;
+    std::vector<std::vector<std::vector<std::atomic<int>*>>> all_finish_atomics;
+
     // CacheManager specific cache metadata
     torch::Tensor counts;
     std::atomic<long> started_threads;
     std::atomic<long> finished_threads;
-    // torch::Tensor cpu_staging_area;
-    // torch::Tensor gpu_staging_area;
 
     // Test variables
-    // torch::Tensor big_graph_arange;
-    // int requests_handled2;
-    // TensorHolder gpu_feat_holder;
     bool use_gpu_transfer;
     torch::Tensor topk_mask;
     concurrent_queue<std::tuple<torch::Tensor, torch::Tensor>> gpu_q;
@@ -214,7 +232,7 @@ private:
 
 
 public:
-    CacheManager(const int num_total_nodes, const int cache_size, const int device_id, const int num_engines, bool use_gpu_transfer, bool use_locking)
+    CacheManager(const int num_total_nodes, const int cache_size, const int device_id, const int num_engines, bool use_gpu_transfer, bool use_locking, const int total_stores, const int executors_per_store)
         : cache_size(cache_size)
         , worker_alive(true)
         , gpu_q()
@@ -231,11 +249,8 @@ public:
         , segment(open_only, "fast_inference_shared_mem")
         , local_ipc_mutex(0)
         , use_locking(use_locking)
-        // , local_ipc_mutex(open_or_create, "test")
-        // , local_ipc_mutex(open_only, ("fast_inference_mutex_gpu_" + std::to_string(device_id)).c_str())
-        // , local_ipc_mutex((named_sharable_mutex::remove( ("fast_inference_mutex_gpu_" + std::to_string(device_id)).c_str() ), open_or_create), 
-        //                   ("fast_inference_mutex_gpu_" + std::to_string(device_id)).c_str()
-        //                   )
+        , total_stores(total_stores)
+        , executors_per_store(executors_per_store)
     {
         auto lock_name = ("fast_inference_mutex_gpu_" + std::to_string(device_id));
 
@@ -254,6 +269,35 @@ public:
         for(int i = 0; i < num_engines; i++){
             interprocess_mutexes.push_back(segment.find<interprocess_sharable_mutex>(("fast_inference_mutex_gpu_" + std::to_string(i)).c_str()).first);
         }
+
+        for(int target = 0; target < total_stores; target++){
+            std::vector<std::vector<std::atomic<int>*>> target_start;
+            std::vector<std::vector<std::atomic<int>*>> target_finish;
+            for(int i = 0; i < total_stores; i++){
+                std::vector<std::atomic<int>*> start_v;
+                std::vector<std::atomic<int>*> finish_v;
+                for(int j = 0; j < executors_per_store; j++){
+                    auto start_name = atomic_start_name(target, i, j).c_str();
+                    start_v.push_back(segment.find<std::atomic<int>>(start_name).first);
+
+                    auto finish_name = atomic_finish_name(target, i, j).c_str();
+                    finish_v.push_back(segment.find<std::atomic<int>>(finish_name).first);
+                }
+
+                target_start.push_back(start_v);
+                target_finish.push_back(finish_v);
+
+                if(target == device_id){
+                    // This store's atomics
+                    start_atomics.push_back(start_v);
+                    finish_atomics.push_back(finish_v);
+                }
+                
+            }
+            all_start_atomics.push_back(target_start);
+            all_finish_atomics.push_back(target_finish);
+        }
+
 
         //!! Start thread after so construction is done
         worker_thread = std::thread(&CacheManager::smallWorker, this);
@@ -300,26 +344,32 @@ public:
     }
 
     // TODO maybe rename to something like "Cache Fetchers"
-    void threadEnter()
+    void threadEnter(int target_id, int reader_store_id, int reader_executor_id)
     {
-        started_threads++;
+        // started_threads++;
+        // auto atomic_name = atomic_start_name(target_id, reader_store_id, reader_executor_id).c_str();
+        // std::atomic<int>* a = segment.find<std::atomic<int>>(atomic_name).first;
+        // auto x = a->fetch_add(1);
+        // std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+        all_start_atomics[target_id][reader_store_id][reader_executor_id]->fetch_add(1);
+        // std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+        // std::cout << "start incr = " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;
+        // cout << "started " << target_id << " " << reader_store_id << " " << reader_executor_id << " " << x + 1 << endl;
     }
 
-    void threadExit()
+    void threadExit(int target_id, int reader_store_id, int reader_executor_id)
     {
-        finished_threads++;
+        // finished_threads++;
         // cout << "finished: " << finished_threads << "\n";
+        // auto atomic_name = atomic_finish_name(target_id, reader_store_id, reader_executor_id).c_str();
+        // std::atomic<int>* a = segment.find<std::atomic<int>>(atomic_name).first;
+        // auto x = a->fetch_add(1);
+        // std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+        all_finish_atomics[target_id][reader_store_id][reader_executor_id]->fetch_add(1);
+        // std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+        // std::cout << "finish incr = " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;
+        // cout << "finished " << target_id << " " << reader_store_id << " " << reader_executor_id << " " << x + 1 << endl;
     }
-
-    torch::Tensor getCounts()
-    {
-        return counts;
-    }
-
-    // void receiveNewFeatures(torch::Tensor feats, torch::Tensor nids){
-    //     ASSERT(use_gpu_transfer, "GPU transfer must be enabled");
-    //     gpu_feat_holder.setFeats(feats, nids);
-    // }
 
     void placeFeatsInQueue(torch::Tensor feats, torch::Tensor nids){
         ASSERT(use_gpu_transfer, "GPU transfer must be enabled");
@@ -328,14 +378,6 @@ public:
 
     void setCacheCandidates(torch::Tensor c){
         this->cache_candidate_mask = c;
-    }
-
-    void lock(){
-        gilRelease([this](){cache_mutex.lock();});
-    }
-
-    void unlock(){
-        cache_mutex.unlock();
     }
 
     void readLock(int index){
@@ -367,7 +409,9 @@ public:
                     // TODO add setting to enable mutex or use atomics
                     // cache_mutex.lock();
                     if(use_locking){
-                        torch::cuda::synchronize();
+                        for(int i = 0; i < torch::cuda::device_count(); i++){
+                            torch::cuda::synchronize(i);
+                        }
                         ASSERT(local_ipc_mutex != 0, "failed pointer nonzero");
                         local_ipc_mutex->lock();
                     }
@@ -424,7 +468,9 @@ public:
                     if(num_to_add == 0){
                         // cache_mutex.unlock();
                         if(use_locking){
-                            torch::cuda::synchronize();
+                            for(int i = 0; i < torch::cuda::device_count(); i++){
+                                torch::cuda::synchronize(i);
+                            }
                             local_ipc_mutex->unlock();
                         }
                         continue;
@@ -439,10 +485,28 @@ public:
                     myStream.synchronize();
 
                     // 2. Wait for enough threads to finish
-                    long fetchers_at_start = started_threads.load();
-                    //!! Need to make sure worker is alive in this loop!
-                    while (finished_threads.load() < fetchers_at_start && worker_alive)
-                        ;
+                    std::vector<std::vector<int>> atomics_at_start;
+                    for(int i = 0; i < total_stores; i++){
+                        std::vector<int> v;
+                        for(int j = 0; j < executors_per_store; j++){
+                            auto atomic_name = atomic_start_name(device_id, i, j).c_str();
+                            std::atomic<int>* a = segment.find<std::atomic<int>>(atomic_name).first;
+                            v.push_back(a->load());
+                        }
+                        atomics_at_start.push_back(v);
+                    }
+
+                    // 3. Spin on atomics
+                    for(int i = 0; i < total_stores; i++){
+                        for(int j = 0; j < executors_per_store; j++){
+                            auto atomic_name = atomic_finish_name(device_id, i, j).c_str();
+                            std::atomic<int>* a = segment.find<std::atomic<int>>(atomic_name).first;
+                            //!! Need to make sure worker is alive in this loop!
+                            while (a->load() < atomics_at_start[i][j] && worker_alive)
+                            ;
+                        }
+                    }
+
                     auto cache_slots = cache_mapping.index({replace_nids});
                     ASSERT(cache_slots.min().item<long>() >= 0 && cache_slots.max().item<long>() < cache_size, "cache slots out of bounds, min " << cache_slots.min().item<long>() << " max " << cache_slots.max().item<long>());
 
@@ -460,7 +524,9 @@ public:
 
                     // cache_mutex.unlock();
                     if(use_locking){
-                        torch::cuda::synchronize();
+                        for(int i = 0; i < torch::cuda::device_count(); i++){
+                            torch::cuda::synchronize(i);
+                        }
                         local_ipc_mutex->unlock();
                     }
                 }

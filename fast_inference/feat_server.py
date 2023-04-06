@@ -6,18 +6,27 @@ from fast_inference_cpp import CacheManager
 import time
 import functools
 
+# class GPUCache:
+#     def __init__(self, num_nodes:int, cache_size: int, device: torch.device):
+#         self.cache_mask =
+#         self.cache_mapping = - \
+#             torch.ones(num_nodes, device=self.device).long()
+
 class FeatureServer:
     def __init__(self, 
                  num_nodes: int,
                  features: Dict[str, torch.Tensor], 
                  device: torch.device or str,
+                 executor_id: int,
                  track_features: List[str],
                  use_pinned_mem: bool = True,
                  profile_hit_rate: bool = False,
                  pinned_buf_size: int = 150_000,
                  peer_lock = None,
                  use_locking = False,
-                 is_leader: bool = True):
+                 is_leader: bool = True,
+                 total_stores: int = -1,
+                 executors_per_store: int = -1):
         """ Initializes a new FeatureServer
 
         Args:
@@ -29,6 +38,8 @@ class FeatureServer:
         self.num_nodes = num_nodes
         self.device = device
         self.device_index = device.index
+        self.executor_id = executor_id
+        
         self.nid_is_on_gpu = torch.zeros(num_nodes, dtype=torch.bool, device=self.device)
         # TODO should this go on GPU?
         self.cache_mapping = - \
@@ -53,6 +64,8 @@ class FeatureServer:
         self.lock_conflicts = 0
         self.use_locking = use_locking
         self.is_leader = is_leader
+        self.total_stores = total_stores
+        self.executors_per_store = executors_per_store
 
     def set_peer_group(self, peers):
         self.peers = peers
@@ -228,6 +241,13 @@ class FeatureServer:
             self.cache[feat] = self.features[feat][node_ids].to(self.device)
             print('**************resetting original cache*****************')
             assert(self.cache[feat].is_shared())
+        
+    def set_shared_cache(self, original_cache_indices, cache_size, nid_is_on_gpu, cache_mapping, cache):
+        self.original_cache_indices = original_cache_indices
+        self.cache_size = cache_size
+        self.nid_is_on_gpu = nid_is_on_gpu
+        self.cache_mapping = cache_mapping
+        self.cache = cache
 
     def export_profile(self, path, current_config):
         if self.profile:
@@ -299,7 +319,7 @@ class CountingFeatServer(FeatureServer):
 
         with torch.cuda.stream(self.update_stream):
             self.peer_lock[self.device_index].acquire()
-            torch.cuda.synchronize()
+            [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
 
             if len(self.peers) > 1:
                 # total_counts = functools.reduce(torch.add, [peer.counts.to(self.device) for peer in self.peers])
@@ -343,7 +363,7 @@ class CountingFeatServer(FeatureServer):
             self.nid_is_on_gpu.copy_(most_common_mask)
             self.cache_mapping[~most_common_mask] = -1
 
-            torch.cuda.synchronize()
+            [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
             self.peer_lock[self.device_index].release()
 
             torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
@@ -376,7 +396,7 @@ class CountingFeatServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        torch.cuda.synchronize()
+        [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
         self.peer_lock[index].acquire()
 
     def sync_cache_read_end(self, index: int):
@@ -385,7 +405,7 @@ class CountingFeatServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        torch.cuda.synchronize()
+        [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
         self.peer_lock[index].release()
     
 class LFUServer(FeatureServer):
@@ -466,20 +486,19 @@ class ManagedCacheServer(FeatureServer):
 
         self.big_graph_arange = torch.arange(num_total_nodes, device=self.device)
 
-
-    def _start_manager(self):
-        self.num_total_nodes = self.num_nodes
-        self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, self.device_index, len(self.peers), True, self.use_locking)
-
     def set_static_cache(self, node_ids: torch.Tensor, feats: List[str]):
         super().set_static_cache(node_ids, feats)
         self.reverse_mapping = node_ids
 
+    def set_shared_cache(self, original_cache_indices, cache_size, nid_is_on_gpu, cache_mapping, cache):
+        super().set_shared_cache(original_cache_indices, cache_size, nid_is_on_gpu, cache_mapping, cache)
+        self.reverse_mapping = original_cache_indices
+
     def start_manager(self):
+        self.num_total_nodes = self.num_nodes
         for feat in self.cache:
-            self._start_manager()
-            self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, 
-                                        self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
+            self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, self.device_index, len(self.peers), True, self.use_locking, self.total_stores, self.executors_per_store)
+            self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
             break
 
     def compute_topk(self):
@@ -690,11 +709,13 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        with Timer('read lock enter'):
+        # with Timer('read lock enter'):
             # self.cache_manager.thread_enter()
-            if self.use_locking:
-                torch.cuda.synchronize()
-                self.cache_manager.read_lock(index)
+        if self.use_locking:
+            [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
+            self.cache_manager.read_lock(index)
+        else:
+            self.cache_manager.thread_enter(index, self.device_index, self.executor_id)
             # TODO put this actual isolation check everywhere
             # assert(not torch.any(self.nid_is_on_gpu[(self.device_index + 1) % 2::2]))
 
@@ -704,9 +725,11 @@ class ManagedCacheServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        with Timer('read lock unlock'):
+        # with Timer('read lock unlock'):
             # self.cache_manager.thread_exit()
-            if self.use_locking:
-                torch.cuda.synchronize()
-                self.cache_manager.read_unlock(index)
+        if self.use_locking:
+            [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
+            self.cache_manager.read_unlock(index)
+        else:
+            self.cache_manager.thread_exit(index, self.device_index, self.executor_id)
         

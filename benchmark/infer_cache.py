@@ -67,21 +67,21 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
 
     for trial in range(trials):
         clear_timers()
-        shm_setup(1)
+        shm_setup(1, 1)
         # Set up feature server
         cache_type = cache_type or 'baseline'
         if cache_type == 'static':
-            feat_server = FeatureServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = FeatureServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'count':
-            feat_server = CountingFeatServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = CountingFeatServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'lfu':
-            feat_server = LFUServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = LFUServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'hybrid' or cache_type == 'async':
-            feat_server = HybridServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = HybridServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'baseline':
             feat_server = None
         elif cache_type == 'cpp':
-            feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True, executors_per_store=1, total_stores=1)
         else:
             print('Cache type', cache_type, 'not supported')
             exit()

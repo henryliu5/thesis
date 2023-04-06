@@ -71,6 +71,12 @@ class InferenceEngine(Process):
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
 
+        # Check that feature stores are sharing information correctly
+        for peer in self.feature_store.peers:
+            assert(peer.nid_is_on_gpu.is_shared())
+            assert(peer.cache_mapping.is_shared())
+            assert(peer.cache['feat'].is_shared())
+
         print('InferenceEngine', self.device_id, 'started')
         self.start_barrier.wait()
 

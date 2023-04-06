@@ -15,7 +15,7 @@ def test_feat_server():
 
     assert (g.device == torch.device('cpu'))
     # TODO add support for multidimensional features ('y')
-    server = FeatureServer(g.num_nodes(), g.ndata, track_features=['x'], device=device)
+    server = FeatureServer(g.num_nodes(), g.ndata, device, 0, track_features=['x'])
 
     # Set the cache to be nodes 0, 2, 4
     server.set_static_cache(node_ids=torch.LongTensor([0, 2, 4]), feats=['x'])
@@ -47,7 +47,9 @@ def test_new_server_correctness():
     x_feats = torch.arange(n, dtype=torch.float).reshape(n, 1)
     g.ndata['x'] = x_feats
 
-    feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, device=device, track_features=['x'])
+    from fast_inference_cpp import shm_setup
+    shm_setup(1, 1)
+    feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, device, 0, track_features=['x'], executors_per_store=1, total_stores=1)
     feat_server.set_static_cache(node_ids=torch.arange(int(n * 0.80), dtype=torch.long), feats=['x'])
     feat_server.init_counts(n)
     feat_server.start_manager()
