@@ -110,6 +110,8 @@ class FeatureServer:
                     assert(peer.cache_mapping.is_shared())
                     assert(peer.cache[feat].is_shared())
 
+                assert(peer.nid_is_on_gpu.long().sum() <= peer.cache_size)
+
                 # assert(torch.all(mapping >= 0))
                 result_features.append(peer.cache[feat][mapping].to(self.device))
                 peer_mask = peer_mask.to(self.device)
@@ -225,6 +227,7 @@ class FeatureServer:
             node_ids (torch.Tensor): Elements should be node ids whose features are to be cached in GPU memory.
             feats (List[str]): List of strings corresponding to feature keys that should be cached.
         """
+        assert(node_ids.device == self.device)
         # Used for resetting the cache between trials
         if self.original_cache_indices is None:
             self.original_cache_indices = node_ids
@@ -238,7 +241,7 @@ class FeatureServer:
 
         for feat in feats:
             print('feautres are shared', self.features[feat].is_shared())
-            self.cache[feat] = self.features[feat][node_ids].to(self.device)
+            self.cache[feat] = self.features[feat][node_ids.cpu()].to(self.device)
             print('**************resetting original cache*****************')
             assert(self.cache[feat].is_shared())
         
@@ -318,7 +321,8 @@ class CountingFeatServer(FeatureServer):
             self.update_stream = torch.cuda.Stream(device=self.device)
 
         with torch.cuda.stream(self.update_stream):
-            self.peer_lock[self.device_index].acquire()
+            if not self.peer_lock is None:
+                self.peer_lock[self.device_index].acquire()
             [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
 
             if len(self.peers) > 1:
@@ -353,18 +357,21 @@ class CountingFeatServer(FeatureServer):
             replace_nids_mask = torch.logical_and(~most_common_mask, cache_mask_device)
             requires_update_cache_idx = self.cache_mapping[replace_nids_mask]
 
-            for feat in feats:
-                old_shape = self.cache[feat].shape
-                self.cache[feat][requires_update_cache_idx] = self.features[feat][requires_update_mask.cpu()].to(self.device)
-                assert(self.cache[feat].shape == old_shape)
+            if requires_update_cache_idx.shape[0] != 0:
+                for feat in feats:
+                    old_shape = self.cache[feat].shape
+                    self.cache[feat][requires_update_cache_idx] = self.features[feat][requires_update_mask.cpu()].to(self.device)
+                    assert(self.cache[feat].shape == old_shape)
 
-            self.cache_mapping[requires_update_mask] = requires_update_cache_idx
-            #!! Need this weird copy_ to perform device to host non blocking transfer (and into pinned memory buffer)
-            self.nid_is_on_gpu.copy_(most_common_mask)
-            self.cache_mapping[~most_common_mask] = -1
+                self.cache_mapping[requires_update_mask] = requires_update_cache_idx
+                #!! Need this weird copy_ to perform device to host non blocking transfer (and into pinned memory buffer)
+                self.nid_is_on_gpu.copy_(most_common_mask)
+                self.cache_mapping[~most_common_mask] = -1
 
-            [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
-            self.peer_lock[self.device_index].release()
+                [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
+                
+            if not self.peer_lock is None:
+                self.peer_lock[self.device_index].release()
 
             torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
             
@@ -397,7 +404,8 @@ class CountingFeatServer(FeatureServer):
             index (int): Device index to be read from
         """
         [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
-        self.peer_lock[index].acquire()
+        if not self.peer_lock is None:
+            self.peer_lock[index].acquire()
 
     def sync_cache_read_end(self, index: int):
         """Releease relevant synchronization resources related to self.sync_cache_read_start
@@ -406,7 +414,8 @@ class CountingFeatServer(FeatureServer):
             index (int): Device index to be read from
         """
         [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
-        self.peer_lock[index].release()
+        if not self.peer_lock is None:
+            self.peer_lock[index].release()
     
 class LFUServer(FeatureServer):
 
@@ -479,7 +488,6 @@ class ManagedCacheServer(FeatureServer):
         self.topk_stream = None
         self.update_stream = None
 
-        self.is_cache_candidate = None
         self.most_common_nids = None
         self.topk_started = False
         self.topk_processed = False
@@ -489,16 +497,19 @@ class ManagedCacheServer(FeatureServer):
     def set_static_cache(self, node_ids: torch.Tensor, feats: List[str]):
         super().set_static_cache(node_ids, feats)
         self.reverse_mapping = node_ids
+        self.is_cache_candidate = torch.zeros(self.num_nodes, dtype=torch.bool, device=self.device)
 
-    def set_shared_cache(self, original_cache_indices, cache_size, nid_is_on_gpu, cache_mapping, cache):
+    def set_shared_cache(self, original_cache_indices, cache_size, nid_is_on_gpu, cache_mapping, cache, is_cache_candidate):
         super().set_shared_cache(original_cache_indices, cache_size, nid_is_on_gpu, cache_mapping, cache)
         self.reverse_mapping = original_cache_indices
+        self.is_cache_candidate = is_cache_candidate
 
     def start_manager(self):
         self.num_total_nodes = self.num_nodes
         for feat in self.cache:
             self.cache_manager = CacheManager(self.num_total_nodes, self.cache_size, self.device_index, len(self.peers), True, self.use_locking, self.total_stores, self.executors_per_store)
             self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
+            self.cache_manager.set_cache_candidates(self.is_cache_candidate)
             break
 
     def compute_topk(self):
@@ -511,12 +522,7 @@ class ManagedCacheServer(FeatureServer):
             self.update_stream = torch.cuda.Stream(device=self.device)
     
         with torch.cuda.stream(self.topk_stream):
-            if self.is_cache_candidate is None:
-                self.is_cache_candidate = torch.zeros(self.num_total_nodes, dtype=torch.bool, device=self.device)
-                self.cache_manager.set_cache_candidates(self.is_cache_candidate)
-            else:
-                torch.zeros(self.num_total_nodes, out=self.is_cache_candidate, dtype=torch.bool, device=self.device)
-
+            torch.zeros(self.num_total_nodes, out=self.is_cache_candidate, dtype=torch.bool, device=self.device)
 
             if len(self.peers) > 1:
                 # total_counts = functools.reduce(torch.add, [peer.counts.to(self.device) for peer in self.peers])
@@ -585,6 +591,7 @@ class ManagedCacheServer(FeatureServer):
             if self.profile:
                 self.profile_info['request_size'].append(node_ids.shape[0])
                 cache_hits = gpu_mask.int().sum().item()
+                assert(cache_hits <= self.cache_size * self.total_stores), f'{cache_hits} cache hits but cache size only {self.cache_size * self.total_stores}'
                 self.profile_info['cache_hits'].append(cache_hits)
                 self.profile_info['hit_rate'].append(cache_hits / node_ids.shape[0])
 
@@ -609,6 +616,11 @@ class ManagedCacheServer(FeatureServer):
                     if self.use_pinned_mem:
                         # Places indices directly into pinned memory buffer
                         torch.index_select(self.features[feat], 0, m.cpu(), out=required_cpu_features)
+                        # if not self.features[feat].is_pinned():
+                        #     # print(type(self.features[feat]))
+                        #     self.features[feat] = self.features[feat].pin_memory()
+                        #     # self.features[feat] = dgl.utils.pin_memory_inplace(self.features[feat])
+                        # required_cpu_features = dgl.utils.pin_memory.gather_pinned_tensor_rows(self.features[feat], m.to(self.device))
                     else:
                         #"slow mode"
                         required_cpu_features = torch.index_select(self.features[feat], 0, m.cpu())
@@ -652,8 +664,7 @@ class ManagedCacheServer(FeatureServer):
                         # !! WARNING: Must use "m" here!! Since the node ids and mask are on GPU, the CPU node id tensor
                         # !! must be fully materialized by the time the tensor is placed on the queue
 
-                        if self.is_leader:
-                            self.cache_manager.place_feats_in_queue(cpu_feats, m)
+                    self.cache_manager.place_feats_in_queue(cpu_feats, m)
 
                         # # Can comment in below and comment out above to use syncrhonous update (async in stream)
                         # with torch.cuda.stream(self.update_stream):
@@ -698,10 +709,11 @@ class ManagedCacheServer(FeatureServer):
     def reset_cache(self):
         super().reset_cache()
         self.counts *= 0
-        self.set_static_cache(self.original_cache_indices, list(self.cache.keys()))
-        for feat in self.cache:
-            self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, 
-                                self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
+        # if self.is_leader:
+        #     self.set_static_cache(self.original_cache_indices, list(self.cache.keys()))
+        # for feat in self.cache:
+        #     self.cache_manager.set_cache(self.features[feat], self.nid_is_on_gpu, 
+        #                         self.cache_mapping, self.reverse_mapping.to(self.device), self.cache[feat])
 
     def sync_cache_read_start(self, index: int):
         """Perform necessary synchronization to begin reading consistent cache state

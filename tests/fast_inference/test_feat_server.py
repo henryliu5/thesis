@@ -18,7 +18,7 @@ def test_feat_server():
     server = FeatureServer(g.num_nodes(), g.ndata, device, 0, track_features=['x'])
 
     # Set the cache to be nodes 0, 2, 4
-    server.set_static_cache(node_ids=torch.LongTensor([0, 2, 4]), feats=['x'])
+    server.set_static_cache(node_ids=torch.tensor([0, 2, 4], dtype=torch.long, device=device), feats=['x'])
     # Check cache properties
     assert (server.cache['x'].shape == torch.Size([3, 3]))
     # assert (server.cache['y'].shape == torch.Size([3, 5, 4]))
@@ -50,7 +50,7 @@ def test_new_server_correctness():
     from fast_inference_cpp import shm_setup
     shm_setup(1, 1)
     feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, device, 0, track_features=['x'], executors_per_store=1, total_stores=1)
-    feat_server.set_static_cache(node_ids=torch.arange(int(n * 0.80), dtype=torch.long), feats=['x'])
+    feat_server.set_static_cache(node_ids=torch.arange(int(n * 0.80), dtype=torch.long, device=device), feats=['x'])
     feat_server.init_counts(n)
     feat_server.start_manager()
 

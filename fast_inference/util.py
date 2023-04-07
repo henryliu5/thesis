@@ -67,7 +67,9 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
                 'cuda', device_id), executor_id, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=profile_hit_rate, pinned_buf_size=pinned_buf_size, **additional_args)
             
             if executor_id == 0:
-                f.set_static_cache(part_indices, ['feat']) 
+                f.set_static_cache(part_indices.to(torch.device('cuda', device_id)), ['feat']) 
+            elif store_type == ManagedCacheServer:
+                f.set_shared_cache(executors[0].original_cache_indices, executors[0].cache_size, executors[0].nid_is_on_gpu, executors[0].cache_mapping, executors[0].cache, executors[0].is_cache_candidate)
             else:
                 f.set_shared_cache(executors[0].original_cache_indices, executors[0].cache_size, executors[0].nid_is_on_gpu, executors[0].cache_mapping, executors[0].cache)
             

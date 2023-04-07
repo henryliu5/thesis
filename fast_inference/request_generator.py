@@ -100,10 +100,11 @@ class RequestGenerator(Process):
                 print('sending reset', i)
                 self.request_queue.put(Request(None, None, None, None, None, RequestType.RESET, None))
 
-            while not self.request_queue.empty():
-                print('request queue not empty', self.request_queue.qsize())
-                
-            self.trial_barriers[trial].wait()
+            self.trial_barriers[trial].wait(60)
+            if self.trial_barriers[trial].broken:
+                print('Barrier broken due to timeout')
+                exit()
+            time.sleep(1)
 
         # Need to have different shutdown mechanism
         for i in range(self.num_engines):

@@ -44,7 +44,7 @@ class PipelinedDataloader(Process):
         use_prof = False
         enable_timers()
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
-            for i in tqdm(range(20_000), disable=self.device.index != 0 or not self.feature_store.is_leader):
+            for i in tqdm(range(10_000), disable=self.device.index != 0 or not self.feature_store.is_leader):
                 requested = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
 
                 if i % 10 == 0:
@@ -108,4 +108,4 @@ if __name__ == '__main__':
     # _check_multiprocess_correctness('static')
     # _check_multiprocess_correctness('count')
     _check_multiprocess_correctness('cpp')
-    # _check_multiprocess_correctness('cpp_lock')
+    _check_multiprocess_correctness('cpp_lock')

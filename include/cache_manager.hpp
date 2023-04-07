@@ -60,7 +60,7 @@ private:
     mutable boost::mutex the_mutex;
     boost::condition_variable the_condition_variable;
     bool alive = true;
-    int BOUND = 5;
+    int BOUND = 1;
 public:
     void disable(){
         alive = false;
@@ -389,11 +389,19 @@ public:
         interprocess_mutexes[index]->unlock_sharable();
     }
 
+    void writeLock(){
+        local_ipc_mutex->lock();
+    }
+
+    void writeUnlock(){
+        local_ipc_mutex->unlock();
+    }
+
     void smallWorker()
         {
             try{
             c10::InferenceMode infer_guard;
-            at::cuda::CUDAStream myStream = at::cuda::getStreamFromPool(false, 0);
+            at::cuda::CUDAStream myStream = at::cuda::getStreamFromPool(false, device_id);
             at::cuda::CUDAStreamGuard guard(myStream);
             pthread_setname_np(pthread_self(), "CacheManager smallWorker");
 
@@ -414,6 +422,12 @@ public:
                         }
                         ASSERT(local_ipc_mutex != 0, "failed pointer nonzero");
                         local_ipc_mutex->lock();
+                    } else {
+                        // local_ipc_mutex->lock();
+                        if(!local_ipc_mutex->try_lock()){
+                            // Skip this update if failed to get lock
+                            continue;
+                        }
                     }
                     /**
                      * Needed:
@@ -448,7 +462,11 @@ public:
                     const float THRESHOLD = 0.01;
                     if((float) nids_to_add.sizes()[0] / (float) cache_size <= THRESHOLD){
                         if(use_locking){
-                            torch::cuda::synchronize();
+                            for(int i = 0; i < torch::cuda::device_count(); i++){
+                                torch::cuda::synchronize(i);
+                            }
+                            local_ipc_mutex->unlock();
+                        } else {
                             local_ipc_mutex->unlock();
                         }
                         continue;
@@ -471,6 +489,8 @@ public:
                             for(int i = 0; i < torch::cuda::device_count(); i++){
                                 torch::cuda::synchronize(i);
                             }
+                            local_ipc_mutex->unlock();
+                        } else {
                             local_ipc_mutex->unlock();
                         }
                         continue;
@@ -527,6 +547,9 @@ public:
                         for(int i = 0; i < torch::cuda::device_count(); i++){
                             torch::cuda::synchronize(i);
                         }
+                        local_ipc_mutex->unlock();
+                    } else {
+                        myStream.synchronize();
                         local_ipc_mutex->unlock();
                     }
                 }

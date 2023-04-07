@@ -27,5 +27,7 @@ PYBIND11_MODULE(fast_inference_cpp, m)
         .def("set_cache_candidates", &CacheManager::setCacheCandidates)
         .def("place_feats_in_queue", &CacheManager::placeFeatsInQueue)
         .def("read_lock", &CacheManager::readLock)
-        .def("read_unlock", &CacheManager::readUnlock);
+        .def("read_unlock", &CacheManager::readUnlock)
+        .def("write_lock", &CacheManager::writeLock)
+        .def("write_unlock", &CacheManager::writeUnlock);
 }

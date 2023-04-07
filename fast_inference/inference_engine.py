@@ -85,7 +85,7 @@ class InferenceEngine(Process):
     
         use_prof = False
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
-            enable_timers()
+            # enable_timers()
             cur_trial = 0
             with torch.cuda.device(self.device): # needed to set timers on correct device
                 while True:
@@ -125,8 +125,8 @@ class InferenceEngine(Process):
                     if req.req_type == RequestType.RESET:
                         if self.output_path != None and self.device_id == 0:
                             self.feature_store.export_profile(f'{self.output_path}/{self.model_name.upper()}_cache_info', {'name': self.dataset, 'batch_size': self.batch_size, 'trial': cur_trial})
-                        print_timer_info()    
-                        clear_timers()
+                        # print_timer_info()    
+                        # clear_timers()
                         # TODO reset feature store state
                         self.feature_store.reset_cache()
                         print(f"Engine {self.device_id}: finished trial {cur_trial}")
