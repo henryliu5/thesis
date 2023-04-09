@@ -60,7 +60,7 @@ private:
     mutable boost::mutex the_mutex;
     boost::condition_variable the_condition_variable;
     bool alive = true;
-    int BOUND = 1;
+    int BOUND = 7;
 public:
     void disable(){
         alive = false;

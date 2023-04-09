@@ -13,6 +13,8 @@ import argparse
 from contextlib import nullcontext
 import os
 import time
+import psutil
+from dgl.utils.internal import get_numa_nodes_cores
 
 device = torch.device('cuda', 0)
 
@@ -21,6 +23,13 @@ device = torch.device('cuda', 0)
 def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=5_000_000, run_profiling=False, trials=1):
     BATCH_SIZE = batch_size
     enable_timers()
+
+    numa_info = get_numa_nodes_cores()
+    pin_cores = [cpus[0] for core_id, cpus in numa_info[0]]
+    psutil.Process().cpu_affinity(pin_cores)
+    print(f'setting cpu affinity', psutil.Process().cpu_affinity())
+    torch.set_num_threads(os.cpu_count() // 2)
+    print('using intra-op threads:', torch.get_num_threads())
 
     infer_percent = 0.1
     if name == 'reddit' or name == 'ogbn-arxiv':

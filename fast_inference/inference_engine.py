@@ -80,7 +80,7 @@ class InferenceEngine(Process):
         print('InferenceEngine', self.device_id, 'started')
         self.start_barrier.wait()
 
-        update_window = 10# * self.num_engines
+        update_window = 5# * self.num_engines
         requests_handled = 2
     
         use_prof = False

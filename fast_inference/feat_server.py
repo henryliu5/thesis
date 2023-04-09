@@ -403,7 +403,7 @@ class CountingFeatServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
+        # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
         if not self.peer_lock is None:
             self.peer_lock[index].acquire()
 
@@ -413,7 +413,7 @@ class CountingFeatServer(FeatureServer):
         Args:
             index (int): Device index to be read from
         """
-        [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
+        # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
         if not self.peer_lock is None:
             self.peer_lock[index].release()
     
@@ -724,7 +724,7 @@ class ManagedCacheServer(FeatureServer):
         # with Timer('read lock enter'):
             # self.cache_manager.thread_enter()
         if self.use_locking:
-            [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
+            # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
             self.cache_manager.read_lock(index)
         else:
             self.cache_manager.thread_enter(index, self.device_index, self.executor_id)
@@ -740,7 +740,7 @@ class ManagedCacheServer(FeatureServer):
         # with Timer('read lock unlock'):
             # self.cache_manager.thread_exit()
         if self.use_locking:
-            [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
+            # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
             self.cache_manager.read_unlock(index)
         else:
             self.cache_manager.thread_exit(index, self.device_index, self.executor_id)
