@@ -1,4 +1,3 @@
-from torch.multiprocessing import Lock
 import torch
 import dgl
 from fast_inference.feat_server import FeatureServer, CountingFeatServer, ManagedCacheServer
@@ -34,7 +33,8 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
         store_type = FeatureServer
     elif cache_type == 'count':
         store_type = CountingFeatServer
-        additional_args['peer_lock'] = [Lock() for _ in range(num_stores)]
+        from fast_inference.rwlock import RWLock
+        additional_args['peer_lock'] = [RWLock() for _ in range(num_stores)]
     elif cache_type == 'cpp':
         store_type = ManagedCacheServer
         additional_args['use_locking'] = False

@@ -322,7 +322,7 @@ class CountingFeatServer(FeatureServer):
 
         with torch.cuda.stream(self.update_stream):
             if not self.peer_lock is None:
-                self.peer_lock[self.device_index].acquire()
+                self.peer_lock[self.device_index].writer_lock.acquire()
             [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
 
             if len(self.peers) > 1:
@@ -371,7 +371,7 @@ class CountingFeatServer(FeatureServer):
                 [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
                 
             if not self.peer_lock is None:
-                self.peer_lock[self.device_index].release()
+                self.peer_lock[self.device_index].reader_lock.release()
 
             torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
             
@@ -405,7 +405,7 @@ class CountingFeatServer(FeatureServer):
         """
         # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
         if not self.peer_lock is None:
-            self.peer_lock[index].acquire()
+            self.peer_lock[index].reader_lock.acquire()
 
     def sync_cache_read_end(self, index: int):
         """Releease relevant synchronization resources related to self.sync_cache_read_start
@@ -415,7 +415,7 @@ class CountingFeatServer(FeatureServer):
         """
         # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
         if not self.peer_lock is None:
-            self.peer_lock[index].release()
+            self.peer_lock[index].reader_lock.release()
     
 class LFUServer(FeatureServer):
 
