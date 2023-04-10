@@ -1,4 +1,3 @@
-from torch.multiprocessing import Lock
 import torch
 import dgl
 from fast_inference.feat_server import FeatureServer, CountingFeatServer, ManagedCacheServer
@@ -22,7 +21,7 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
     Returns:
         List[FeatureServer]: _description_
     """
-    shm_setup(num_stores)
+    shm_setup(num_stores, executors_per_store)
 
     num_nodes = graph.num_nodes()
     features = {f: graph.ndata[f] for f in track_feature_types}
@@ -34,12 +33,18 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
         store_type = FeatureServer
     elif cache_type == 'count':
         store_type = CountingFeatServer
-        additional_args['peer_lock'] = [Lock() for _ in range(num_stores)]
+        from fast_inference.rwlock import RWLock
+        additional_args['peer_lock'] = [RWLock() for _ in range(num_stores)]
     elif cache_type == 'cpp':
         store_type = ManagedCacheServer
+        additional_args['use_locking'] = False
+        additional_args['executors_per_store'] = executors_per_store
+        additional_args['total_stores'] = num_stores
     elif cache_type == 'cpp_lock':
         store_type = ManagedCacheServer
         additional_args['use_locking'] = True
+        additional_args['executors_per_store'] = executors_per_store
+        additional_args['total_stores'] = num_stores
     else:
         print('Cache type', cache_type, 'not supported')
         exit()
@@ -55,10 +60,19 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
 
             if executor_id == 0:
                 additional_args['is_leader'] = True
+            else:
+                additional_args['is_leader'] = False
 
             f = store_type(num_nodes, features, torch.device(
-                'cuda', device_id), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=profile_hit_rate, pinned_buf_size=pinned_buf_size, **additional_args)
-            f.set_static_cache(part_indices, ['feat']) 
+                'cuda', device_id), executor_id, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=profile_hit_rate, pinned_buf_size=pinned_buf_size, **additional_args)
+            
+            if executor_id == 0:
+                f.set_static_cache(part_indices.to(torch.device('cuda', device_id)), ['feat']) 
+            elif store_type == ManagedCacheServer:
+                f.set_shared_cache(executors[0].original_cache_indices, executors[0].cache_size, executors[0].nid_is_on_gpu, executors[0].cache_mapping, executors[0].cache, executors[0].is_cache_candidate)
+            else:
+                f.set_shared_cache(executors[0].original_cache_indices, executors[0].cache_size, executors[0].nid_is_on_gpu, executors[0].cache_mapping, executors[0].cache)
+            
             executors.append(f)
             
         feature_stores.append(executors)

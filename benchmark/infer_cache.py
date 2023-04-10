@@ -13,6 +13,8 @@ import argparse
 from contextlib import nullcontext
 import os
 import time
+import psutil
+from dgl.utils.internal import get_numa_nodes_cores
 
 device = torch.device('cuda', 0)
 
@@ -21,6 +23,13 @@ device = torch.device('cuda', 0)
 def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=5_000_000, run_profiling=False, trials=1):
     BATCH_SIZE = batch_size
     enable_timers()
+
+    numa_info = get_numa_nodes_cores()
+    pin_cores = [cpus[0] for core_id, cpus in numa_info[0]]
+    psutil.Process().cpu_affinity(pin_cores)
+    print(f'setting cpu affinity', psutil.Process().cpu_affinity())
+    torch.set_num_threads(os.cpu_count() // 2)
+    print('using intra-op threads:', torch.get_num_threads())
 
     infer_percent = 0.1
     if name == 'reddit' or name == 'ogbn-arxiv':
@@ -67,21 +76,21 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
 
     for trial in range(trials):
         clear_timers()
-        shm_setup(1)
+        shm_setup(1, 1)
         # Set up feature server
         cache_type = cache_type or 'baseline'
         if cache_type == 'static':
-            feat_server = FeatureServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = FeatureServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'count':
-            feat_server = CountingFeatServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = CountingFeatServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'lfu':
-            feat_server = LFUServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = LFUServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'hybrid' or cache_type == 'async':
-            feat_server = HybridServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = HybridServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
         elif cache_type == 'baseline':
             feat_server = None
         elif cache_type == 'cpp':
-            feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
+            feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True, executors_per_store=1, total_stores=1)
         else:
             print('Cache type', cache_type, 'not supported')
             exit()
@@ -94,7 +103,7 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
             out_deg = g.out_degrees()
             _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=True)
             del out_deg
-            feat_server.set_static_cache(indices, ['feat'])
+            feat_server.set_static_cache(indices.to(device), ['feat'])
 
             if cache_type == 'cpp':
                 feat_server.start_manager()

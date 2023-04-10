@@ -35,6 +35,8 @@ class PipelinedDataloader(Process):
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
 
+        print(self.feature_store.cache['feat'].is_shared())
+
         # Need to re-pin the feature store buffer
         for k, v in self.feature_store.pinned_buf_dict.items():
             self.feature_store.pinned_buf_dict[k] = v.pin_memory()
@@ -42,7 +44,7 @@ class PipelinedDataloader(Process):
         use_prof = False
         enable_timers()
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
-            for i in tqdm(range(20_000), disable=self.device.index != 0 or not self.feature_store.is_leader):
+            for i in tqdm(range(10_000), disable=self.device.index != 0 or not self.feature_store.is_leader):
                 requested = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
 
                 if i % 10 == 0:
@@ -104,5 +106,6 @@ def test_static_race():
 
 if __name__ == '__main__':
     # _check_multiprocess_correctness('static')
-    # _check_multiprocess_correctness('cpp')
+    # _check_multiprocess_correctness('count')
+    _check_multiprocess_correctness('cpp')
     _check_multiprocess_correctness('cpp_lock')

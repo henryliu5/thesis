@@ -71,15 +71,21 @@ class InferenceEngine(Process):
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
 
+        # Check that feature stores are sharing information correctly
+        for peer in self.feature_store.peers:
+            assert(peer.nid_is_on_gpu.is_shared())
+            assert(peer.cache_mapping.is_shared())
+            assert(peer.cache['feat'].is_shared())
+
         print('InferenceEngine', self.device_id, 'started')
         self.start_barrier.wait()
 
-        update_window = 10# * self.num_engines
+        update_window = 5# * self.num_engines
         requests_handled = 2
     
         use_prof = False
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
-            enable_timers()
+            # enable_timers()
             cur_trial = 0
             with torch.cuda.device(self.device): # needed to set timers on correct device
                 while True:
@@ -119,8 +125,8 @@ class InferenceEngine(Process):
                     if req.req_type == RequestType.RESET:
                         if self.output_path != None and self.device_id == 0:
                             self.feature_store.export_profile(f'{self.output_path}/{self.model_name.upper()}_cache_info', {'name': self.dataset, 'batch_size': self.batch_size, 'trial': cur_trial})
-                        print_timer_info()    
-                        clear_timers()
+                        # print_timer_info()    
+                        # clear_timers()
                         # TODO reset feature store state
                         self.feature_store.reset_cache()
                         print(f"Engine {self.device_id}: finished trial {cur_trial}")
