@@ -122,7 +122,7 @@ class FeatureServer:
 
         [stream.synchronize() for stream in self.peer_streams]
 
-        if dur > 0.0005:
+        if dur >= 0.001:
             print('Waited for lock', dur)
             self.lock_conflicts += 1
 
