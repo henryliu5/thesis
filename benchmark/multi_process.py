@@ -126,6 +126,7 @@ if __name__ == '__main__':
     engines = []
     # t = torch.ones(3, device='cuda')
     for device_id in range(num_devices):
+        logical_g = logical_g.to(torch.device('cuda', device_id))
         for executor_id in range(executors_per_store):
             # engines.append(CUDATest(t, device_id))
             # engines[-1].start()

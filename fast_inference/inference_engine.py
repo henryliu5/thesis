@@ -37,7 +37,7 @@ class InferenceEngine(Process):
         self.feature_store = feature_store
 
         self.logical_g = logical_g
-        self.sampler = InferenceSampler(logical_g.to(self.device))
+        self.sampler = InferenceSampler(logical_g)
         self.model = model.to(device)
 
         # Benchmarking info
