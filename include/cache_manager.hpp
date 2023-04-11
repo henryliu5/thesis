@@ -417,9 +417,7 @@ public:
                     // TODO add setting to enable mutex or use atomics
                     // cache_mutex.lock();
                     if(use_locking){
-                        for(int i = 0; i < torch::cuda::device_count(); i++){
-                            torch::cuda::synchronize(i);
-                        }
+                        myStream.synchronize();
                         ASSERT(local_ipc_mutex != 0, "failed pointer nonzero");
                         local_ipc_mutex->lock();
                     } else {
@@ -462,9 +460,7 @@ public:
                     const float THRESHOLD = 0.01;
                     if((float) nids_to_add.sizes()[0] / (float) cache_size <= THRESHOLD){
                         if(use_locking){
-                            for(int i = 0; i < torch::cuda::device_count(); i++){
-                                torch::cuda::synchronize(i);
-                            }
+                            myStream.synchronize();
                             local_ipc_mutex->unlock();
                         } else {
                             local_ipc_mutex->unlock();
@@ -486,9 +482,7 @@ public:
                     if(num_to_add == 0){
                         // cache_mutex.unlock();
                         if(use_locking){
-                            for(int i = 0; i < torch::cuda::device_count(); i++){
-                                torch::cuda::synchronize(i);
-                            }
+                            myStream.synchronize();
                             local_ipc_mutex->unlock();
                         } else {
                             local_ipc_mutex->unlock();
@@ -544,9 +538,7 @@ public:
 
                     // cache_mutex.unlock();
                     if(use_locking){
-                        for(int i = 0; i < torch::cuda::device_count(); i++){
-                            torch::cuda::synchronize(i);
-                        }
+                        myStream.synchronize();
                         local_ipc_mutex->unlock();
                     } else {
                         myStream.synchronize();
