@@ -26,6 +26,7 @@ def load_df(model_name: str, path: str, graph_name: str, batch_size: int, trials
         
         avg_exec = trial_df['total'].mean()
         if best == None or avg_exec < best:
+            best = avg_exec
             index = trial
 
     return dfs[index]
@@ -53,6 +54,7 @@ def load_df_cache_info(model_name: str, path: str, graph_name: str, batch_size: 
         
         avg_exec = trial_df['total'].mean()
         if best == None or avg_exec < best:
+            best = avg_exec
             index = trial
     print('using index', index)
     return pd.read_csv(os.path.join(path, model_name + "_cache_info", f'{graph_name}-{batch_size}-{index}.csv'))
