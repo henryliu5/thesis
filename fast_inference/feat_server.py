@@ -63,10 +63,13 @@ class FeatureServer:
 
         self.peer_lock = peer_lock
         self.lock_conflicts = 0
+        self.lock_conflict_trace = {'wait_time': []}
+                                    # 'executor_id': [], 'store_id': [], 'num_stores': [], 'executors_per_store': []}
         self.use_locking = use_locking
         self.is_leader = is_leader
         self.total_stores = total_stores
         self.executors_per_store = executors_per_store
+        self.requests_handled = 0
 
     def get_peer_features(self, node_ids: torch.LongTensor, feat: str):
         if self.peer_streams is None:
@@ -115,6 +118,12 @@ class FeatureServer:
         if dur >= 0.001:
             print('Waited for lock', dur)
             self.lock_conflicts += 1
+
+        self.lock_conflict_trace['wait_time'].append(dur)
+        # self.lock_conflict_trace['executor_id'].append(self.executor_id)
+        # self.lock_conflict_trace['store_id'].append(self.store_id)
+        # self.lock_conflict_trace['num_stores'].append(self.total_stores)
+        # self.lock_conflict_trace['executors_per_store'].append(self.executors_per_store)
 
         return result_masks, result_features
 

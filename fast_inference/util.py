@@ -30,6 +30,8 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
     nids = torch.arange(num_nodes)
 
     additional_args = {}
+    additional_args['executors_per_store'] = executors_per_store
+    additional_args['total_stores'] = num_stores
     if cache_type == 'static':
         store_type = FeatureServer
     elif cache_type == 'count':
@@ -42,13 +44,9 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
     elif cache_type == 'cpp':
         store_type = ManagedCacheServer
         additional_args['use_locking'] = False
-        additional_args['executors_per_store'] = executors_per_store
-        additional_args['total_stores'] = num_stores
     elif cache_type == 'cpp_lock':
         store_type = ManagedCacheServer
         additional_args['use_locking'] = True
-        additional_args['executors_per_store'] = executors_per_store
-        additional_args['total_stores'] = num_stores
     else:
         print('Cache type', cache_type, 'not supported')
         exit()
