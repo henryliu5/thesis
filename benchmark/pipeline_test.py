@@ -24,7 +24,7 @@ from contextlib import nullcontext
 import os
 
 class PipelinedDataloader(Process):
-    def __init__(self, feature_store, device, num_nodes, cache_type, num_stores, num_executors_per_store):
+    def __init__(self, feature_store, device, num_nodes, cache_type, num_stores, num_executors_per_store, start_barrier):
         super().__init__()
         self.feature_store = feature_store
         self.device = device
@@ -33,6 +33,7 @@ class PipelinedDataloader(Process):
         self.cache_type = cache_type
         self.num_stores = num_stores
         self.num_executors_per_store = num_executors_per_store
+        self.start_barrier = start_barrier
 
     def run(self):
         print('device id', self.feature_store.device_index, 'exec id', self.feature_store.executor_id)
@@ -44,6 +45,8 @@ class PipelinedDataloader(Process):
 
         use_prof = False
         enable_timers()
+
+        self.start_barrier.wait()
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
             for i in range(500):
                 required_nids = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
@@ -86,10 +89,12 @@ if __name__ == '__main__':
 
     feature_stores = create_feature_stores(cache_type, num_stores, num_executors_per_store, g, ['feat'], 0.2, True, profile_hit_rate=True, pinned_buf_size=1_000_000)
 
+    start_barrier = Barrier(num_stores * num_executors_per_store)
+
     dl_processes = []
     for i in range(num_stores):
         for j in range(num_executors_per_store):
-            dl_processes.append(PipelinedDataloader(feature_stores[i][j], torch.device('cuda', i), num_nodes, cache_type, num_stores, num_executors_per_store))
+            dl_processes.append(PipelinedDataloader(feature_stores[i][j], torch.device('cuda', i), num_nodes, cache_type, num_stores, num_executors_per_store, start_barrier))
     
     s = time.perf_counter()
     [p.start() for p in dl_processes]
