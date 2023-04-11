@@ -71,11 +71,11 @@ class InferenceEngine(Process):
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
 
-        # Check that feature stores are sharing information correctly
-        for peer in self.feature_store.peers:
-            assert(peer.nid_is_on_gpu.is_shared())
-            assert(peer.cache_mapping.is_shared())
-            assert(peer.cache['feat'].is_shared())
+        # # Check that feature stores are sharing information correctly
+        # for peer in self.feature_store.caches:
+        #     assert(peer.nid_is_on_gpu.is_shared())
+        #     assert(peer.cache_mapping.is_shared())
+        #     assert(peer.cache['feat'].is_shared())
 
         print('InferenceEngine', self.device_id, 'started')
         self.start_barrier.wait()
@@ -93,12 +93,12 @@ class InferenceEngine(Process):
                     if req.req_type == RequestType.RESET:
                         print('engine', self.device_id, 'received reset')
                     req.time_exec_started = time.perf_counter()
-
-                    if requests_handled % update_window == 0:
-                        self.feature_store.compute_topk()
-                        self.feature_store.update_cache(['feat'])
-
                     if req.req_type == RequestType.INFERENCE or req.req_type == RequestType.WARMUP:
+                        if requests_handled % update_window == 0:
+                            self.feature_store.compute_topk()
+                            self.feature_store.update_cache(['feat'])
+
+
                         with Timer('exec request'):
                             mfgs = self.sampler.sample(req.nids, req.edges, use_gpu_sampling=True, device=self.device)
 
@@ -113,9 +113,9 @@ class InferenceEngine(Process):
                                 # self.feature_store.peer_lock[self.device_id].release()
                                 x = self.model(mfgs, inputs)
                                 x.cpu()
+                        requests_handled += 1
 
                     req.time_exec_finished = time.perf_counter()
-                    requests_handled += 1
 
                     if req.req_type != RequestType.WARMUP:
                         self.response_queue.put(Request(None, None, None, req.id, req.trial, RequestType.RESPONSE if req.req_type == RequestType.INFERENCE else req.req_type, req.time_generated, req.time_exec_started, req.time_exec_finished))

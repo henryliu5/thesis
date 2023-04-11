@@ -35,7 +35,7 @@ class PipelinedDataloader(Process):
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
 
-        print(self.feature_store.cache['feat'].is_shared())
+        # print(self.feature_store.cache['feat'].is_shared())
 
         # Need to re-pin the feature store buffer
         for k, v in self.feature_store.pinned_buf_dict.items():

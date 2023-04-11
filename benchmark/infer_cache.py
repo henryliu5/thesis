@@ -3,6 +3,8 @@ from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
 from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, ManagedCacheServer
 from fast_inference.sampler import InferenceSampler
+from fast_inference.device_cache import DeviceFeatureCache
+from fast_inference.util import create_feature_stores
 from fast_inference_cpp import shm_setup
 import dgl
 import torch
@@ -79,32 +81,21 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         shm_setup(1, 1)
         # Set up feature server
         cache_type = cache_type or 'baseline'
-        if cache_type == 'static':
-            feat_server = FeatureServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
-        elif cache_type == 'count':
-            feat_server = CountingFeatServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
-        elif cache_type == 'lfu':
-            feat_server = LFUServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
-        elif cache_type == 'hybrid' or cache_type == 'async':
-            feat_server = HybridServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
-        elif cache_type == 'baseline':
-            feat_server = None
-        elif cache_type == 'cpp':
-            feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True, executors_per_store=1, total_stores=1)
+        if cache_type != 'baseline':
+            stores = create_feature_stores(cache_type, 
+                                           num_stores=1, 
+                                           executors_per_store=1,
+                                           graph=g, 
+                                           track_feature_types=['feat'], 
+                                           cache_percent=cache_percent, 
+                                           use_pinned_mem=use_pinned_mem, 
+                                           profile_hit_rate=True, 
+                                           pinned_buf_size=1_000_000)
+            feat_server = stores[0][0]
         else:
-            print('Cache type', cache_type, 'not supported')
-            exit()
-        # # #!! Use only from partition 1
-        # part_mapping = infer_data._orig_nid_partitions
-        # indices = torch.arange(g.num_nodes())[part_mapping == 2]
+            feat_server = None
 
         if feat_server:
-            # Let's use top 20% of node features for static cache
-            out_deg = g.out_degrees()
-            _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=True)
-            del out_deg
-            feat_server.set_static_cache(indices.to(device), ['feat'])
-
             if cache_type == 'cpp':
                 feat_server.start_manager()
 
@@ -114,12 +105,6 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
 
             processed = 0
 
-            print('Caching', indices.shape[0], 'nodes')
-            del indices
-            gc.collect()
-        
-            # Need to do this BEFORE converting to logical graph since nodes will be removed
-            feat_server.init_counts(g.num_nodes())
         elif use_pinned_mem:
             pin_buf = torch.empty((150_000, g.ndata['feat'].shape[1]), dtype=torch.float, pin_memory=True)
 
