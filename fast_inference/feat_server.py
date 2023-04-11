@@ -392,7 +392,7 @@ class CountingFeatServer(FeatureServer):
     def reset_cache(self):
         super().reset_cache()
         self.counts *= 0
-        self.set_static_cache(self.original_cache_indices, list(self.cache.keys()))
+        # self.set_static_cache(self.original_cache_indices, list(self.cache.keys()))
 
     def sync_cache_read_start(self, index: int):
         """Perform necessary synchronization to begin reading consistent cache state
