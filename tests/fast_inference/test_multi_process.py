@@ -48,8 +48,7 @@ class PipelinedDataloader(Process):
                 requested = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
 
                 if i % 10 == 0:
-                    self.feature_store.compute_topk()
-                    self.feature_store.update_cache(['feat'])
+                    self.feature_store.update_cache()
 
                 result, _ = self.feature_store.get_features(requested, ['feat'], None)
 

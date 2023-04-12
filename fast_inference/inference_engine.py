@@ -95,9 +95,7 @@ class InferenceEngine(Process):
                     req.time_exec_started = time.perf_counter()
                     if req.req_type == RequestType.INFERENCE or req.req_type == RequestType.WARMUP:
                         if requests_handled % update_window == 0:
-                            self.feature_store.compute_topk()
-                            self.feature_store.update_cache(['feat'])
-
+                            self.feature_store.update_cache()
 
                         with Timer('exec request'):
                             mfgs = self.sampler.sample(req.nids, req.edges, use_gpu_sampling=True, device=self.device)

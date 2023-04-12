@@ -52,8 +52,7 @@ class PipelinedDataloader(Process):
                 required_nids = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
 
                 if i % 10 == 0:
-                    self.feature_store.compute_topk()
-                    self.feature_store.update_cache(['feat'])
+                    self.feature_store.update_cache()
 
                 self.feature_store.get_features(required_nids, ['feat'], None)
         

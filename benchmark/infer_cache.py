@@ -127,10 +127,7 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
                             # Cache: (update) + feature gather + CPU-GPU copy
                             with Timer(name="update cache", track_cuda=True):
                                 if (i // k) > processed + 1:
-                                    if cache_type == 'cpp' or cache_type == 'count':
-                                        feat_server.compute_topk()
-
-                                    feat_server.update_cache(['feat'])
+                                    feat_server.update_cache()
                                     processed = i // k  
 
                             inputs, mfgs = feat_server.get_features(required_feats, feats=['feat'], mfgs=mfgs)

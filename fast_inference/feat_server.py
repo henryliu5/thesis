@@ -231,9 +231,6 @@ class FeatureServer:
     def update_cache(self, *args):
         pass
 
-    def compute_topk(self, *args):
-        pass
-
     def sync_cache_read_start(self, index: int):
         """Perform necessary synchronization to begin reading consistent cache state
 
@@ -266,13 +263,7 @@ class CountingFeatServer(FeatureServer):
         for i in range(len(self.caches)):
             print('peer', i, 'self.counts', hasattr(self.caches[i], 'counts'))
 
-    def compute_topk(self):
-        # with torch.cuda.stream(self.topk_stream):
-        #     _, self.most_common_nids = torch.topk(self.counts.to(self.device, non_blocking=True), self.cache_size, sorted=False)
-        #     self.topk_started = True
-        pass
-
-    def update_cache(self, feats):
+    def update_cache(self):
         if not self.is_leader:
             return
 
@@ -314,7 +305,7 @@ class CountingFeatServer(FeatureServer):
         requires_update_cache_idx = cache_mapping[replace_nids_mask]
 
         if requires_update_cache_idx.shape[0] != 0:
-            for feat in feats:
+            for feat in cache.keys():
                 old_shape = cache[feat].shape
                 cache[feat][requires_update_cache_idx] = self.features[feat][requires_update_mask.cpu()].to(self.device)
                 assert(cache[feat].shape == old_shape)
@@ -463,7 +454,7 @@ class ManagedCacheServer(FeatureServer):
             self.cache_manager.set_cache_candidates(self.is_cache_candidate)
             break
 
-    def compute_topk(self):
+    def update_cache(self):
         if not self.is_leader:
             return
 
@@ -491,17 +482,6 @@ class ManagedCacheServer(FeatureServer):
 
             self.topk_started = True
             self.topk_processed = False
-
-    def update_cache(self, feats):
-        # if self.topk_started:
-        #     # TODO figure out why this doesn't work when put by placing features in the queue
-        #     if not self.topk_processed:
-        #         torch.cuda.current_stream().wait_stream(self.topk_stream)
-        #         #!! This first line is kinda weird but goes here to allow
-        #         #!! self.most_common_nids to be computed async in self.topk_stream
-        #         self.is_cache_candidate[self.most_common_nids] = True
-        #         self.topk_processed = True
-        pass
         
 
     def get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
