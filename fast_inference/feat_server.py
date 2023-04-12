@@ -254,14 +254,11 @@ class FeatureServer:
 class CountingFeatServer(FeatureServer):
     # TODO tidy this up, no need to num total nodes again here
     def init_counts(self, num_total_nodes):
-        self.num_total_nodes = num_total_nodes
         self.counts = torch.zeros(num_total_nodes, dtype=torch.long, device=self.device)
 
         self.most_common_nids = None
         self.topk_started = False
         print('FeatureStore', self.device_index, 'initialized counts')
-        for i in range(len(self.caches)):
-            print('peer', i, 'self.counts', hasattr(self.caches[i], 'counts'))
 
     def update_cache(self):
         if not self.is_leader:
@@ -293,7 +290,7 @@ class CountingFeatServer(FeatureServer):
         assert(torch.all(self.counts >= 0))
 
         cache_mask_device = cache_mask
-        most_common_mask = torch.zeros(self.num_total_nodes, device=self.device).bool()
+        most_common_mask = torch.zeros(self.num_nodes, device=self.device).bool()
         most_common_mask[most_common_nids] = True
 
         # Mask for node ids that need features to be transferred
@@ -366,7 +363,6 @@ class CountingFeatServer(FeatureServer):
 class LFUServer(FeatureServer):
 
     def init_counts(self, num_total_nodes):
-        self.num_total_nodes = num_total_nodes
         self.counts = torch.zeros(num_total_nodes, device=self.device)
 
     def update_cache(self, *args):
@@ -428,7 +424,7 @@ class LFUServer(FeatureServer):
 class ManagedCacheServer(FeatureServer):
 
     def init_counts(self, num_total_nodes):
-        self.num_total_nodes = num_total_nodes
+        self.num_nodes = num_total_nodes
         self.counts = torch.zeros(num_total_nodes, dtype=torch.short, device=self.device)
 
         self.topk_stream = None
@@ -441,15 +437,13 @@ class ManagedCacheServer(FeatureServer):
         self.is_cache_candidate = torch.zeros(self.num_nodes, dtype=torch.bool, device=self.device)
 
     def start_manager(self):
-        self.num_total_nodes = self.num_nodes
-
         cache = self.caches[self.store_id].cache
         cache_mask = self.caches[self.store_id].cache_mask
         cache_mapping = self.caches[self.store_id].cache_mapping
         reverse_mapping = self.caches[self.store_id].reverse_mapping
         cache_size = self.caches[self.store_id].cache_size
         for feat in cache:
-            self.cache_manager = CacheManager(self.num_total_nodes, cache_size, self.device_index, len(self.caches), True, self.use_locking, self.total_stores, self.executors_per_store)
+            self.cache_manager = CacheManager(self.num_nodes, cache_size, self.device_index, len(self.caches), True, self.use_locking, self.total_stores, self.executors_per_store)
             self.cache_manager.set_cache(self.features[feat], cache_mask, cache_mapping, reverse_mapping, cache[feat])
             self.cache_manager.set_cache_candidates(self.is_cache_candidate)
             break
@@ -466,7 +460,7 @@ class ManagedCacheServer(FeatureServer):
             self.update_stream = torch.cuda.Stream(device=self.device)
     
         with torch.cuda.stream(self.topk_stream):
-            torch.zeros(self.num_total_nodes, out=self.is_cache_candidate, dtype=torch.bool, device=self.device)
+            torch.zeros(self.num_nodes, out=self.is_cache_candidate, dtype=torch.bool, device=self.device)
 
             if len(self.caches) > 1:
                 # total_counts = functools.reduce(torch.add, [peer.counts.to(self.device) for peer in self.caches])

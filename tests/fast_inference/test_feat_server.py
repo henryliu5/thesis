@@ -64,7 +64,7 @@ def test_new_server_correctness():
         requested = torch.randint(0, n, (32,), device=device).unique()
 
         if i % do_topk == 0:
-            feat_server.update_cache(['x'])
+            feat_server.update_cache()
         
         result, _ = feat_server.get_features(requested, ['x'])
 
