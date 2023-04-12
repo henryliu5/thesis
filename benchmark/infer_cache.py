@@ -155,10 +155,8 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
                                 inputs = inputs.to(device)
                         
 
-                    with Timer(name='model', track_cuda=True):
-                        with Timer('actual forward'):
-                            x = model(mfgs, inputs)
-
+                    with Timer(name='model'):
+                        x = model(mfgs, inputs)
                         # Force sync
                         x.cpu()
 

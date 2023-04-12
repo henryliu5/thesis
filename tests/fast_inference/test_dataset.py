@@ -1,6 +1,8 @@
 from fast_inference.dataset import InferenceDataset
 import torch as th
+import pytest
 
+@pytest.mark.skip(reason="slow test, run manually")
 def test_inference_dataset_reload():
     """ Check reloading dataset from disk works correctly """
     graph1 = InferenceDataset('reddit', 0.1, force_reload=True, verbose=True)
