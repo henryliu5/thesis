@@ -125,7 +125,9 @@ if __name__ == '__main__':
 
     engines = []
     # t = torch.ones(3, device='cuda')
-    for device_id in range(num_devices):
+    for store_id in range(num_devices):
+        # Can have more "devices" (feature stores) than GPUs
+        device_id = store_id % torch.cuda.device_count()
         logical_g = logical_g.to(torch.device('cuda', device_id))
         for executor_id in range(executors_per_store):
             # engines.append(CUDATest(t, device_id))
@@ -138,7 +140,7 @@ if __name__ == '__main__':
                                     trial_barriers=trial_barriers,
                                     num_engines=num_engines,
                                     device=torch.device('cuda', device_id),
-                                    feature_store=feature_stores[device_id][executor_id],
+                                    feature_store=feature_stores[store_id][executor_id],
                                     logical_g = logical_g,
                                     model=model,
                                     # Benchmarking info

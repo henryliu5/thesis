@@ -12,6 +12,9 @@ from dgl.utils import get_numa_nodes_cores
 import psutil
 import os
 import time
+import numpy as np
+from dataclasses import dataclass
+from typing import Tuple, Dict
 
 class WorkerType(Enum):
     DISABLED = 0
@@ -45,6 +48,21 @@ def deserialize_mfgs(mfg_tuple):
     return mfgs
 
 
+@dataclass(frozen=True)
+class SamplerQueueMessage:
+    id: int
+    required_feats: torch.Tensor
+    mfg_tuple: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    timing_info: Dict[str, float]
+
+@dataclass(frozen=True)
+class FeatureQueueMessage:
+    id: int
+    inputs: torch.Tensor
+    mfg_tuple: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    timing_info: Dict[str, float]
+
+
 class PipelineManager(Process):
     """
     Can control state of pipeline workers by interacting with numpy array in shared memory
@@ -53,8 +71,11 @@ class PipelineManager(Process):
     def __init__(self, num_workers: int, response_queue: Queue):
         super().__init__()
         self.response_queue = response_queue
-        
-        # self.worker_types = shared_memory.SharedMemory(create=True, size=a)
+
+        a = np.zeros(num_workers, dtype=np.int32)
+        self.worker_types_buf = shared_memory.SharedMemory(create=True, size=a.nbytes)
+        self.worker_types_np = np.ndarray(a.shape, dtype=a.dtype, buffer=self.worker_types_buf.buf)
+        self.worker_types_np[:] = a[:]
 
     def run(self):
         pass
@@ -71,6 +92,9 @@ class PipelineWorker(Process):
                  disable_cv: Condition,
                  barriers: Dict[str, Barrier],
                  device: torch.device,
+                 worker_type_buf: shared_memory.SharedMemory,
+                 worker_id: int,
+                 num_workers: int,
                  worker_type: WorkerType):
         super().__init__()
 
@@ -86,19 +110,27 @@ class PipelineWorker(Process):
 
         self.barriers = barriers
         self.device = device
+
+        self.worker_type_arr = np.ndarray((num_workers,), np.int32, worker_type_buf.buf)
+        self.worker_id = worker_id
+        self.num_workers = num_workers
         self.worker_type = worker_type
 
         print('Creating worker', self.worker_type, 'on device', self.device)
 
     @torch.inference_mode()
     def run(self):
+        if self.feature_store is not None:
+            for k, v in self.feature_store.pinned_buf_dict.items():
+                self.feature_store.pinned_buf_dict[k] = v.pin_memory()
+
         numa_info = get_numa_nodes_cores()
         pin_cores = [cpus[0] for core_id, cpus in numa_info[self.device.index % 2]]
 
         psutil.Process().cpu_affinity(pin_cores)
         print(f'setting cpu affinity', psutil.Process().cpu_affinity())
         # torch.set_num_threads(os.cpu_count() // 2)
-        torch.set_num_threads(4)
+        torch.set_num_threads(16)
         print('using intra-op threads:', torch.get_num_threads())
 
         if type(self.feature_store) == ManagedCacheServer:
@@ -109,55 +141,55 @@ class PipelineWorker(Process):
 
         self.barriers['start'].wait()
         while True:
+            # self.worker_type = WorkerType(self.worker_type_arr[self.worker_id])
             if self.worker_type == WorkerType.DISABLED:
                 self.disable_cv.wait()
                 # Upon wakeup, should not be disabled anymore
                 # TODO add check here by reading shm
             elif self.worker_type == WorkerType.SAMPLER:
                 req = self.request_queue.get()
-                s = time.perf_counter()
 
+                s = time.perf_counter()
                 mfgs = self.sampler.sample(
                     req.nids, req.edges, use_gpu_sampling=True, device=self.device)
                 
                 required_feats = mfgs[0].ndata['_ID']['_N']
-                self.sampled_mfgs_queue.put((required_feats, serialize_mfgs(mfgs)))
-
                 e = time.perf_counter()
-                # print('sample', e-s)
+
+                msg = SamplerQueueMessage(req.id, required_feats, serialize_mfgs(mfgs), {'sample': e - s, 'time_generated': s})
+                self.sampled_mfgs_queue.put(msg)
 
             elif self.worker_type == WorkerType.DATA_LOADER:
-                if requests_handled % update_window == 0:
-                    self.feature_store.compute_topk()
-                    self.feature_store.update_cache(['feat'])
+                msg: SamplerQueueMessage = self.sampled_mfgs_queue.get()
 
-                required_feats, mfg_tuple = self.sampled_mfgs_queue.get()
                 s = time.perf_counter()
 
-                mfgs = deserialize_mfgs(mfg_tuple)
+                if requests_handled % update_window == 0:
+                    self.feature_store.update_cache()
+
+                mfgs = deserialize_mfgs(msg.mfg_tuple)
                 inputs, mfgs = self.feature_store.get_features(
-                    required_feats, feats=['feat'], mfgs=mfgs)
+                    msg.required_feats, feats=['feat'], mfgs=mfgs)
                 inputs = inputs['feat']
 
-                self.feature_queue.put((inputs, serialize_mfgs(mfgs)))
-                requests_handled += 1
                 e = time.perf_counter()
-                # print('gather', e-s)
+                msg = FeatureQueueMessage(msg.id, inputs, serialize_mfgs(mfgs), {'data_load_time': e - s} | msg.timing_info)
+                self.feature_queue.put(msg)
+                requests_handled += 1
 
 
             elif self.worker_type == WorkerType.MODEL_EXECUTOR:
-                inputs, mfg_tuple = self.feature_queue.get()
+                msg: FeatureQueueMessage = self.feature_queue.get()
                 s = time.perf_counter()
 
-                mfgs = deserialize_mfgs(mfg_tuple)
-                outputs = self.model(mfgs, inputs)
+                mfgs = deserialize_mfgs(msg.mfg_tuple)
+                outputs = self.model(mfgs, msg.inputs)
                 outputs = outputs.cpu()
 
                 # self.response_queue.put(Request(None, None, None, req.id, req.trial, RequestType.RESPONSE if req.req_type == RequestType.INFERENCE else req.req_type, req.time_generated, req.time_exec_started, req.time_exec_finished))
-                self.response_queue.put(outputs)
-
                 e = time.perf_counter()
-                # print('exec', e-s)
+                print('elapsed', e - msg.timing_info['time_generated'], 'sample', msg.timing_info['sample'], 'data_load', msg.timing_info['data_load_time'], 'exec', e - s)
+                self.response_queue.put(Request(None, None, None, msg.id, None, RequestType.RESPONSE, msg.timing_info['time_generated'], None, None))
 
 
 def create_pipeline(num_devices: int, samplers: int, data_loaders: int, model_executors: int,
@@ -186,12 +218,17 @@ def create_pipeline(num_devices: int, samplers: int, data_loaders: int, model_ex
     logical_g = dgl.graph(g.edges())
 
     disable_cv = None
+
+    total_workers = num_devices * workers_per_device
+
+    manager = PipelineManager(total_workers, response_queue)
+
     workers = []
 
     for device_id in range(num_devices):
         logical_g = logical_g.to(torch.device('cuda', device_id))
-        sampled_mfgs_queue = Queue(4)
-        feature_queue = Queue(4)
+        sampled_mfgs_queue = Queue(1)
+        feature_queue = Queue(1)
         model = model.to(torch.device('cuda', device_id))
 
         for i in range(workers_per_device):
@@ -207,7 +244,11 @@ def create_pipeline(num_devices: int, samplers: int, data_loaders: int, model_ex
             sampler = InferenceSampler(logical_g)
             worker = PipelineWorker(sampler, feature_store, model, request_queue,
                                     sampled_mfgs_queue, feature_queue, response_queue, disable_cv, barriers, 
-                                    torch.device('cuda', device_id), worker_type)
+                                    torch.device('cuda', device_id), 
+                                    worker_type_buf=manager.worker_types_buf,
+                                    worker_id=device_id * workers_per_device + i,
+                                    num_workers=total_workers,
+                                    worker_type=worker_type)
             
             worker.start()
             workers.append(worker)
