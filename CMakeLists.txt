@@ -10,7 +10,7 @@ set(CMAKE_SHARED_LINKER_FLAGS "-Wl,--no-undefined")
 
 include_directories(include ${Boost_INCLUDE_DIR})
 
-pybind11_add_module(fast_inference_cpp src/cache_manager.cpp)
+pybind11_add_module(fast_inference_cpp src/fast_inference.cpp src/cache_manager.cpp)
 target_link_libraries(fast_inference_cpp PRIVATE "${TORCH_LIBRARIES}" ${Boost_LIBRARIES})
 set_property(TARGET fast_inference_cpp PROPERTY CXX_STANDARD 17)
 

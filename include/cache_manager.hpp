@@ -1,3 +1,5 @@
+#ifndef CACHE_MANAGER_H
+#define CACHE_MANAGER_H
 // #include <boost/lockfree/spsc_queue.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/condition_variable.hpp>
@@ -18,6 +20,7 @@
 #include <chrono>
 #include <vector>
 #include <algorithm>
+#include "shm.hpp"
 using namespace std::chrono;
 
 
@@ -34,20 +37,6 @@ using namespace std::chrono;
 #   define ASSERT(condition, message) do { } while (false)
 #endif
 
-class AutoProfiler {
- public:
-  AutoProfiler(std::string name)
-      : m_name(std::move(name)),
-        m_beg(std::chrono::high_resolution_clock::now()) { }
-  ~AutoProfiler() {
-    auto end = std::chrono::high_resolution_clock::now();
-    auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end - m_beg);
-    std::cout << m_name << " : " << dur.count() << " musec\n";
-  }
- private:
-  std::string m_name;
-  std::chrono::time_point<std::chrono::high_resolution_clock> m_beg;
-};
 
 using torch::indexing::Slice, torch::indexing::None;
 using std::cout, std::endl;
@@ -146,35 +135,6 @@ public:
 };
 
 using namespace boost::interprocess;
-
-std::string atomic_start_name(int target_store_id, int reader_store_id, int reader_executor_id){
-    return "fast_inference_atomic_gpu_" + std::to_string(target_store_id) + "_store_" + std::to_string(reader_store_id) + "_executor_" + std::to_string(reader_executor_id) + "start";
-}
-
-std::string atomic_finish_name(int target_store_id, int reader_store_id, int reader_executor_id){
-    return "fast_inference_atomic_gpu_" + std::to_string(target_store_id) + "_store_" + std::to_string(reader_store_id) + "_executor_" + std::to_string(reader_executor_id) + "finish";
-}
-
-void shmSetup(int num_stores, int executors_per_store){
-    shared_memory_object::remove("fast_inference_shared_mem");
-    managed_shared_memory segment(create_only, "fast_inference_shared_mem", 65536);
-
-    for(int i = 0; i < num_stores; i++){
-        auto lock_name = ("fast_inference_mutex_gpu_" + std::to_string(i)).c_str();
-        cout << "Constructing lock: " << lock_name << endl;
-        segment.construct<interprocess_sharable_mutex>(lock_name)();
-
-        for(int j = 0; j < num_stores; j++){
-            for(int k = 0; k < executors_per_store; k++){
-                auto start_name = atomic_start_name(i, j, k).c_str();
-                segment.construct<std::atomic<int>>(start_name)(0);
-
-                auto finish_name = atomic_finish_name(i, j, k).c_str();
-                segment.construct<std::atomic<int>>(finish_name)(0);
-            }
-        }
-    }
-}
 
 class CacheManager {
     /** Controls cache state.
@@ -561,3 +521,5 @@ public:
 
     void gilRelease(std::function<void()> f);
 };
+
+#endif
