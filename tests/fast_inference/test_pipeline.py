@@ -1,7 +1,8 @@
 import torch
 from fast_inference.models.factory import load_model
-from fast_inference.pipeline.pipeline_worker import WorkerType, ControlMessage
+from fast_inference.pipeline.pipeline_worker import WorkerType
 from fast_inference.pipeline.pipeline import create_pipeline
+from fast_inference.message import Message, MessageType
 from torch.multiprocessing import Barrier, Queue, set_start_method
 import dgl
 
@@ -37,8 +38,8 @@ def test_pipeline_creation_teardown():
     assert workers[4].worker_type == WorkerType.MODEL_EXECUTOR
     assert workers[5].worker_type == WorkerType.MODEL_EXECUTOR
 
-    request_queue.put(ControlMessage(0))
-    request_queue.put(ControlMessage(0))
+    request_queue.put(Message(-1, -1, {}, MessageType.SHUTDOWN, None))
+    request_queue.put(Message(-1, -1, {}, MessageType.SHUTDOWN, None))
 
     # # manager.shutdown()
     # barriers['finish'].wait()

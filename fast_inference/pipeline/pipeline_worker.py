@@ -1,21 +1,23 @@
 import torch
-from fast_inference.request_generator import Request, RequestType
+from fast_inference.message import Message, MessageType, RequestPayload, SamplerQueuePayload, FeatureQueuePayload, ResponsePayload
+from fast_inference.sampler import InferenceSampler
+from fast_inference.feat_server import FeatureServer, ManagedCacheServer
+from fast_inference.timer import export_dict_as_pd, enable_timers, Timer
 import time
 from dataclasses import dataclass
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Callable
 
 from torch.multiprocessing import Process, Queue, Condition, Barrier
 from multiprocessing import shared_memory
 from enum import Enum
-from fast_inference.sampler import InferenceSampler
-from fast_inference.feat_server import FeatureServer, ManagedCacheServer
-from typing import Dict
+
 import dgl
 from dgl.utils import get_numa_nodes_cores
 import psutil
 import time
 import numpy as np
-
+from torch.profiler import profile, record_function, ProfilerActivity
+from contextlib import nullcontext
 
 def serialize_mfgs(mfgs):
     # Need to deconstruct and COPY mfg nids
@@ -40,29 +42,6 @@ def deserialize_mfgs(mfg_tuple):
         mfgs.append(dgl.create_block(
             (us[i], vs[i]), num_src_nodes=num_src_nodes[i], num_dst_nodes=num_dst_nodes[i]))
     return mfgs
-
-
-@dataclass(frozen=True)
-class SamplerQueueMessage:
-    id: int
-    required_feats: torch.Tensor
-    mfg_tuple: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
-    timing_info: Dict[str, float]
-
-
-@dataclass(frozen=True)
-class FeatureQueueMessage:
-    id: int
-    inputs: torch.Tensor
-    mfg_tuple: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
-    timing_info: Dict[str, float]
-
-
-class ControlMessage(Enum):
-    SHUTDOWN = 0
-
-    def __str__(self):
-        return str(self.name)
 
 
 class WorkerType(Enum):
@@ -136,86 +115,126 @@ class PipelineWorker(Process):
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
 
-        self.barriers['start'].wait()
-        while True:
-            self.worker_type = WorkerType(self.worker_type_arr[self.worker_id])
-            if self.worker_type == WorkerType.DISABLED:
-                self.disable_cv.wait()
-                # Upon wakeup, should not be disabled anymore
-                # TODO add check here by reading shm
-            elif self.worker_type == WorkerType.SAMPLER:
-                req = self.request_queue.get()
-                if type(req) == ControlMessage:
-                    self.sampled_mfgs_queue.put(req)
+        enable_timers()
+    
+        use_prof = False
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
+            self.barriers['start'].wait()
+            while True:
+                self.worker_type = WorkerType(self.worker_type_arr[self.worker_id])
+                if self.worker_type == WorkerType.DISABLED:
+                    self.disable_cv.wait()
+                    # Upon wakeup, should not be disabled anymore
+                    # TODO add check here by reading shm
+                elif self.worker_type == WorkerType.SAMPLER:
+                    in_queue = self.request_queue
+                    out_queue = self.sampled_mfgs_queue
+                    strategy = sampler_strategy
+
+                elif self.worker_type == WorkerType.DATA_LOADER:
+                    in_queue = self.sampled_mfgs_queue
+                    out_queue = self.feature_queue
+                    strategy = data_loader_strategy
+
+                elif self.worker_type == WorkerType.MODEL_EXECUTOR:
+                    in_queue = self.feature_queue
+                    out_queue = self.response_queue
+                    strategy = model_executor_strategy
+
+                elif self.worker_type == WorkerType.SHUTDOWN:
                     break
 
-                self.sampled_mfgs_queue.put(sampler_strategy(self, req))
-
-            elif self.worker_type == WorkerType.DATA_LOADER:
-                in_msg = self.sampled_mfgs_queue.get()
-                if type(in_msg) == ControlMessage:
-                    self.feature_queue.put(in_msg)
+                should_exit = self.dispatch(in_queue, out_queue, strategy)
+                if should_exit:
                     break
 
-                self.feature_queue.put(data_loader_strategy(self, in_msg))
-
-            elif self.worker_type == WorkerType.MODEL_EXECUTOR:
-                in_msg = self.feature_queue.get()
-                if type(in_msg) == ControlMessage:
-                    self.response_queue.put(in_msg)
-                    break
-
-                self.response_queue.put(model_executor_strategy(self, in_msg))
-
-            elif self.worker_type == WorkerType.SHUTDOWN:
-                break
-
+        if use_prof:
+            prof.export_chrome_trace(f'pipeline_trace_rank_{self.worker_id}_{self.worker_type.name}_total_{self.num_workers}.json')
         self.cleanup()
         print('Worker', self.worker_id, 'exiting')
 
     def cleanup(self):
+        if self.feature_store is not None:
+            export_dict_as_pd(self.feature_store.lock_conflict_trace, 'pipeline_trace', {'cache_type': self.feature_store.cache_name,
+                                                                                     'store_id': self.feature_store.store_id,
+                                                                                     'executor_id': self.feature_store.executor_id}, 0)
+
         print('Worker', self.worker_id, 'cleaning up CUDA tensors')
         del self.model
         del self.sampler
         del self.feature_store
         # self.barriers['finish'].wait()
 
+    def dispatch(self, in_queue: Queue, out_queue: Queue, strategy: Callable) -> bool:
+        msg: Message = in_queue.get()
+        should_exit = (msg.msg_type == MessageType.SHUTDOWN) or (msg.msg_type == MessageType.RESET)
+        if not should_exit:
+            with Timer('strategy', track_cuda=True):
+                out_msg = strategy(self, msg)
+            del msg
+            out_queue.put(out_msg)
+        else:
+            out_queue.put(msg)
+        return should_exit
+    
+        # try:
+        #     msg: Message = in_queue.get(timeout=5)
+        #     out_queue.put(strategy(self, msg))
+        # except Empty as error:
+        #     pass
 
-def sampler_strategy(worker: PipelineWorker, in_msg: Request) -> FeatureQueueMessage:
-    req = in_msg
+def sampler_strategy(worker: PipelineWorker, in_msg: Message) -> Message:
+    payload: RequestPayload = in_msg.payload
+    assert (isinstance(payload, RequestPayload)), f'Expected RequestPayload, got {type(payload)}, message type {in_msg.msg_type}'
 
     s = time.perf_counter()
     mfgs = worker.sampler.sample(
-        req.nids, req.edges, use_gpu_sampling=True, device=worker.device)
+        payload.nids, payload.edges, use_gpu_sampling=True, device=worker.device)
 
     required_feats = mfgs[0].ndata['_ID']['_N']
     e = time.perf_counter()
 
-    return SamplerQueueMessage(req.id, required_feats, serialize_mfgs(mfgs), {'sample': e - s, 'time_generated': req.time_generated, 'sample_start': s})
+    return Message(id=in_msg.id,
+                   trial=in_msg.trial,
+                   timing_info=in_msg.timing_info | {
+                       'sample': e - s, 'sample_start': s},
+                   msg_type=in_msg.msg_type,
+                   payload=SamplerQueuePayload(required_feats, serialize_mfgs(mfgs)))
 
 
-def data_loader_strategy(worker: PipelineWorker, in_msg: SamplerQueueMessage) -> FeatureQueueMessage:
+def data_loader_strategy(worker: PipelineWorker, in_msg: Message) -> Message:
+    payload: SamplerQueuePayload = in_msg.payload
+    assert (isinstance(payload, SamplerQueuePayload)), f'Expected SamplerQueuePayload, got {type(payload)}, message type {in_msg.msg_type}'
+
     s = time.perf_counter()
-
     if worker.requests_handled % worker.update_window == 0:
         worker.feature_store.update_cache()
 
-    mfgs = deserialize_mfgs(in_msg.mfg_tuple)
+    with Timer('deserialize mfgs'):
+        mfgs = deserialize_mfgs(payload.mfg_tuple)
     inputs, mfgs = worker.feature_store.get_features(
-        in_msg.required_feats, feats=['feat'], mfgs=mfgs)
+        payload.required_feats, feats=['feat'], mfgs=mfgs)
     inputs = inputs['feat']
 
     e = time.perf_counter()
     worker.requests_handled += 1
-    return FeatureQueueMessage(in_msg.id, inputs, serialize_mfgs(mfgs), {'data_load_time': e - s} | in_msg.timing_info)
+
+    return Message(id=in_msg.id,
+                   trial=in_msg.trial,
+                   timing_info=in_msg.timing_info | {'data_load_time': e - s},
+                   msg_type=in_msg.msg_type,
+                   payload=FeatureQueuePayload(inputs, serialize_mfgs(mfgs)))
 
 
-def model_executor_strategy(worker: PipelineWorker, in_msg: FeatureQueueMessage) -> Request:
+def model_executor_strategy(worker: PipelineWorker, in_msg: Message) -> Message:
     msg = in_msg
+    payload: FeatureQueuePayload = msg.payload
+    assert(isinstance(payload, FeatureQueuePayload)), f'Expected FeatureQueuePayload, got {type(payload)}, message type {msg.msg_type}'
+
     s = time.perf_counter()
 
-    mfgs = deserialize_mfgs(msg.mfg_tuple)
-    outputs = worker.model(mfgs, msg.inputs)
+    mfgs = deserialize_mfgs(payload.mfg_tuple)
+    outputs = worker.model(mfgs, payload.inputs)
     outputs = outputs.cpu()
 
     e = time.perf_counter()
@@ -225,4 +244,9 @@ def model_executor_strategy(worker: PipelineWorker, in_msg: FeatureQueueMessage)
           'data_load', round(msg.timing_info['data_load_time'], 5),
           'exec', round(e - s, 5),
           'diff', round(e - msg.timing_info['sample_start'] - msg.timing_info['sample'] - msg.timing_info['data_load_time'] - (e-s), 5))
-    return Request(None, None, None, msg.id, None, RequestType.RESPONSE, msg.timing_info['time_generated'], None, None)
+
+    return Message(id=msg.id,
+                   trial=msg.trial,
+                   timing_info=msg.timing_info | {'exec_time': e - s},
+                   msg_type=MessageType.RESPONSE,
+                   payload=ResponsePayload())

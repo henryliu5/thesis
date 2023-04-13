@@ -1,24 +1,16 @@
 ''' Benchmark for multiprocessing '''
-from fast_inference.dataset import InferenceDataset, FastEdgeRepr
+from fast_inference.dataset import InferenceDataset
 from fast_inference.models.factory import load_model
-from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, ManagedCacheServer
-from fast_inference.util import create_feature_stores
-from fast_inference.inference_engine import InferenceEngine
 from fast_inference.request_generator import RequestGenerator, ResponseRecipient
 from fast_inference.pipeline.pipeline import create_pipeline
-import dgl
 import torch
-from tqdm import tqdm
-from torch.profiler import profile, record_function, ProfilerActivity
-import time
 
-from torch.multiprocessing import Queue, Process, Barrier, set_start_method, Lock
+from torch.multiprocessing import Queue, Barrier, set_start_method
 try:
     set_start_method('spawn')
 except RuntimeError:
     pass
 
-import gc
 import argparse
 from contextlib import nullcontext
 import os
@@ -87,13 +79,13 @@ if __name__ == '__main__':
 
 
     # Pipeline stages per device
-    samplers = 4
-    data_loaders = 4
-    model_executors = 4
+    samplers = 2
+    data_loaders = 2
+    model_executors = 2
 
     num_worker_procs = num_devices * (samplers + data_loaders + model_executors)
 
-    request_queue = Queue(num_worker_procs)
+    request_queue = Queue()
     response_queue = Queue()
     # # Request generator + Inference Engines + Response recipient
     start_barrier = Barrier(2 + num_worker_procs)
@@ -102,7 +94,7 @@ if __name__ == '__main__':
 
     request_generator = RequestGenerator(request_queue=request_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                          num_engines=num_engines,
-                                         trace=trace, batch_size=batch_size, max_iters=max_iters, rate=0, trials=num_trials)
+                                         trace=trace, batch_size=batch_size, max_iters=500, rate=150, trials=num_trials)
     request_generator.start()
     response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                            num_engines=num_engines, num_devices=num_devices, executors_per_store=executors_per_store,
@@ -117,7 +109,7 @@ if __name__ == '__main__':
 
     num_nodes = g.num_nodes()
 
-    pipeline_workers = create_pipeline(num_devices=num_devices, 
+    manager, pipeline_workers = create_pipeline(num_devices=num_devices, 
                                         samplers=samplers,
                                         data_loaders=data_loaders,
                                         model_executors=model_executors,

@@ -9,6 +9,7 @@ import functools
 
 
 class FeatureServer:
+    cache_name = 'static'
     def __init__(self, 
                  caches: List[DeviceFeatureCache],
                  num_nodes: int,
@@ -79,9 +80,10 @@ class FeatureServer:
             peer = self.caches[i]
 
             with torch.cuda.stream(self.peer_streams[i]):
-                s = time.perf_counter()
-                self.sync_cache_read_start(i)
-                dur += time.perf_counter() - s
+                with Timer('acquire peer lock'):
+                    s = time.perf_counter()
+                    self.sync_cache_read_start(i)
+                    dur += time.perf_counter() - s
 
                 # Only transfer node ids that belong to that GPU
                 # peer_mask = gpu_mask & (node_ids % num_peers == i)
@@ -121,7 +123,7 @@ class FeatureServer:
 
         return result_masks, result_features
 
-    def _get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None):
+    def _get_features(self, node_ids: torch.LongTensor, feats: List[str], mfgs: Optional[dgl.DGLGraph]=None, request_id: Optional[int]=None):
         """Get features for a list of nodes.
 
         Features are fetched from GPU memory if cached, otherwise from CPU memory.
@@ -131,6 +133,11 @@ class FeatureServer:
             feats (List[str]): List of strings corresponding to feature keys that should be fetched.
         """
         assert(node_ids.device != torch.device('cpu'))
+        if request_id != None:
+            if 'request_id' not in self.lock_conflict_trace:
+                self.lock_conflict_trace['request_id'] = []
+            self.lock_conflict_trace['request_id'].append(request_id)
+
         if mfgs is None:
             mfgs = []
 
@@ -252,6 +259,7 @@ class FeatureServer:
             self.profile_info[k] = []
 
 class CountingFeatServer(FeatureServer):
+    cache_name = 'count'
     # TODO tidy this up, no need to num total nodes again here
     def init_counts(self, num_total_nodes):
         self.counts = torch.zeros(num_total_nodes, dtype=torch.long, device=self.device)
@@ -422,7 +430,7 @@ class LFUServer(FeatureServer):
 
 
 class ManagedCacheServer(FeatureServer):
-
+    cache_name = 'cpp'
     def init_counts(self, num_total_nodes):
         self.num_nodes = num_total_nodes
         self.counts = torch.zeros(num_total_nodes, dtype=torch.short, device=self.device)
@@ -435,6 +443,8 @@ class ManagedCacheServer(FeatureServer):
         self.topk_processed = False
 
         self.is_cache_candidate = torch.zeros(self.num_nodes, dtype=torch.bool, device=self.device)
+        if self.use_locking:
+            self.cache_name = 'cpp_lock'
 
     def start_manager(self):
         cache = self.caches[self.store_id].cache

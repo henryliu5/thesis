@@ -2,33 +2,10 @@ import torch
 from torch.multiprocessing import Process, Queue, Barrier
 from fast_inference.dataset import InferenceTrace
 from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_timer_info, export_dict_as_pd
-from typing import List, Dict, Optional
-from dataclasses import dataclass
-from enum import Enum
 from tqdm import tqdm
 import time
 from fast_inference.dataset import InferenceDataset, FastEdgeRepr
- 
-class RequestType(Enum):
-    INFERENCE = 1
-    RESET = 2
-    SHUTDOWN = 3
-    RESPONSE = 4
-    WARMUP = 5
-
-@dataclass
-class Request:
-    nids: torch.Tensor
-    features: torch.Tensor
-    edges: FastEdgeRepr
-
-    id: int
-    trial: int
-    req_type: RequestType
-    
-    time_generated: float
-    time_exec_started: Optional[float] = None
-    time_exec_finished: Optional[float] = None
+from fast_inference.message import Message, MessageType, RequestPayload
 
 
 class RequestGenerator(Process):
@@ -74,9 +51,19 @@ class RequestGenerator(Process):
                     features = self.trace.features[i:i+self.batch_size]
                     edges = self.trace.edges.get_batch(i, i + self.batch_size)
 
-                    req = Request(nids, features, edges, i, None, RequestType.WARMUP, time.perf_counter())
-                    self.request_queue.put(req)
-        time.sleep(2)
+                    # req = Request(nids, features, edges, i, None, RequestType.WARMUP, time.perf_counter())
+                    request = Message(id=i, 
+                                      trial=None,
+                                      timing_info={'time_generated': time.perf_counter()},
+                                      msg_type=MessageType.WARMUP,
+                                      payload=RequestPayload(nids=nids,
+                                                             features=features,
+                                                             edges=edges)
+                                      )
+                    self.request_queue.put(request)
+
+        while self.request_queue.qsize() > 0:
+            time.sleep(1)
         
         for trial in range(self.trials):
             print('Starting trial', trial)
@@ -92,13 +79,25 @@ class RequestGenerator(Process):
                     batch_end = time.perf_counter()
                     time.sleep(max(delay_between_requests - (batch_end - batch_start), 0))
 
-                    req = Request(nids, features, edges, i, trial, RequestType.INFERENCE, time.perf_counter())
-                    self.request_queue.put(req)
+                    # req = Request(nids, features, edges, i, trial, RequestType.INFERENCE, time.perf_counter())
+                    request = Message(id=i,
+                                      trial=trial,
+                                      timing_info={'time_generated': time.perf_counter()},
+                                      msg_type=MessageType.INFERENCE,
+                                      payload=RequestPayload(nids=nids,
+                                                             features=features,
+                                                             edges=edges)
+                                      )
+                    self.request_queue.put(request)
 
             # Send out resets
             for i in range(self.num_engines):
                 print('sending reset', i)
-                self.request_queue.put(Request(None, None, None, None, None, RequestType.RESET, None))
+                # self.request_queue.put(Request(None, None, None, None, None, RequestType.RESET, None))
+                self.request_queue.put(Message(id=-1,
+                                                trial=-1,
+                                                timing_info={},
+                                                msg_type=MessageType.RESET))
 
             self.trial_barriers[trial].wait(60)
             if self.trial_barriers[trial].broken:
@@ -108,7 +107,11 @@ class RequestGenerator(Process):
 
         # Need to have different shutdown mechanism
         for i in range(self.num_engines):
-            self.request_queue.put(Request(None, None, None, None, None, RequestType.SHUTDOWN, None))
+            # self.request_queue.put(Request(None, None, None, None, None, RequestType.SHUTDOWN, None))
+            self.request_queue.put(Message(id=-1,
+                                           trial=-1,
+                                           timing_info={},
+                                           msg_type=MessageType.SHUTDOWN))
 
         self.finish_barrier.wait()
 
@@ -143,19 +146,19 @@ class ResponseRecipient(Process):
         cur_trial = 0
         num_resets = 0
         while True:
-            resp = self.response_queue.get()
-            if resp.req_type == RequestType.RESPONSE:
+            msg: Message = self.response_queue.get()
+            if msg.msg_type == MessageType.RESPONSE:
                 time_received = time.perf_counter()
-                TRACES['total (received)'].append(time_received - resp.time_generated)
-                TRACES['total'].append(resp.time_exec_finished - resp.time_exec_started)
-                TRACES['id'].append(resp.id)
+                TRACES['total (received)'].append(time_received - msg.timing_info['time_generated'])
+                TRACES['total'].append(msg.timing_info['time_exec_finished'] - msg.timing_info['time_exec_started'])
+                TRACES['id'].append(msg.id)
 
-                # print('got resp for', resp.id, 'in', time.perf_counter() - resp.time_generated)
-                assert(resp.trial == cur_trial)
-            elif resp.req_type == RequestType.SHUTDOWN:
+                # print('got resp for', msg.id, 'in', time.perf_counter() - msg.time_generated)
+                assert(msg.trial == cur_trial)
+            elif msg.msg_type == MessageType.SHUTDOWN:
                 print('ResponseRecipient received shutdown')
                 break
-            elif resp.req_type == RequestType.RESET:
+            elif msg.msg_type == MessageType.RESET:
                 # Finished 1 trial, need to receive finish from all engines
                 num_resets += 1
                 if num_resets == self.num_engines:

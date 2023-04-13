@@ -1,9 +1,10 @@
 import torch
 from torch.multiprocessing import Process, Queue, Barrier
-from fast_inference.request_generator import Request, RequestType
+from fast_inference.message import Message, MessageType, RequestPayload
+from fast_inference.request_generator import MessageType
 from fast_inference.feat_server import FeatureServer, ManagedCacheServer
 from fast_inference.sampler import InferenceSampler
-from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info
+from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_dict_as_pd
 from torch.profiler import profile, record_function, ProfilerActivity
 from contextlib import nullcontext
 import time
@@ -85,20 +86,25 @@ class InferenceEngine(Process):
     
         use_prof = False
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
-            # enable_timers()
+            enable_timers()
             cur_trial = 0
             with torch.cuda.device(self.device): # needed to set timers on correct device
                 while True:
                     req = self.request_queue.get()
-                    if req.req_type == RequestType.RESET:
+                    if req.msg_type == MessageType.RESET:
                         print('engine', self.device_id, 'received reset')
-                    req.time_exec_started = time.perf_counter()
-                    if req.req_type == RequestType.INFERENCE or req.req_type == RequestType.WARMUP:
+
+                    timing_info = req.timing_info
+
+                    timing_info['time_exec_started'] = time.perf_counter()
+                    if req.msg_type == MessageType.INFERENCE or req.msg_type == MessageType.WARMUP:
                         if requests_handled % update_window == 0:
                             self.feature_store.update_cache()
 
                         with Timer('exec request'):
-                            mfgs = self.sampler.sample(req.nids, req.edges, use_gpu_sampling=True, device=self.device)
+                            assert(isinstance(req.payload, RequestPayload))
+                            payload = req.payload
+                            mfgs = self.sampler.sample(payload.nids, payload.edges, use_gpu_sampling=True, device=self.device)
 
                             with Timer('dataloading', track_cuda=True):
                                 required_feats = mfgs[0].ndata['_ID']['_N']
@@ -113,14 +119,18 @@ class InferenceEngine(Process):
                                 x.cpu()
                         requests_handled += 1
 
-                    req.time_exec_finished = time.perf_counter()
+                    timing_info['time_exec_finished'] = time.perf_counter()
 
-                    if req.req_type != RequestType.WARMUP:
-                        self.response_queue.put(Request(None, None, None, req.id, req.trial, RequestType.RESPONSE if req.req_type == RequestType.INFERENCE else req.req_type, req.time_generated, req.time_exec_started, req.time_exec_finished))
-                    if req.req_type == RequestType.SHUTDOWN:
+                    if req.msg_type != MessageType.WARMUP:
+                        # self.response_queue.put(Request(None, None, None, req.id, req.trial, MessageType.RESPONSE if req.msg_type == MessageType.INFERENCE else req.msg_type, req.time_generated, req.time_exec_started, req.time_exec_finished))
+                        self.response_queue.put(Message(id=req.id,
+                                                         trial=req.trial, 
+                                                         timing_info=timing_info, 
+                                                         msg_type=MessageType.RESPONSE if req.msg_type == MessageType.INFERENCE else req.msg_type))
+                    if req.msg_type == MessageType.SHUTDOWN:
                         print(f'InferenceEngine {self.device_id} received shutdown request, id: {req.id}')
                         break
-                    if req.req_type == RequestType.RESET:
+                    if req.msg_type == MessageType.RESET:
                         if self.output_path != None and self.device_id == 0:
                             self.feature_store.export_profile(f'{self.output_path}/{self.model_name.upper()}_cache_info', {'name': self.dataset, 'batch_size': self.batch_size, 'trial': cur_trial})
                         # print_timer_info()    
@@ -134,9 +144,13 @@ class InferenceEngine(Process):
                         cur_trial += 1
                         
         if use_prof:
-            prof.export_chrome_trace(f'multiprocess_trace_rank_{self.device_id}.json')
+            prof.export_chrome_trace(f'multiprocess_trace_store_{self.device_id}_executor_{self.feature_store.executor_id}.json')
 
-        
+        export_dict_as_pd(self.feature_store.lock_conflict_trace, 'pipeline_trace', {'cache_type': self.feature_store.cache_name,
+                                                                                    'store_id': self.feature_store.store_id,
+                                                                                    'executor_id': self.feature_store.executor_id,
+                                                                                    'num_stores': len(self.feature_store.caches),
+                                                                                    'executors_per_store': 4}, 0)
         self.finish_barrier.wait()
 
 
