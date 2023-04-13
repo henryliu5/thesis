@@ -25,21 +25,3 @@ if __name__ == '__main__':
     plt.savefig(f'Lock_Conflicts.png', bbox_inches='tight', dpi=250)
     plt.clf()
     print(df)
-
-    # cache_type = 'cpp'
-
-    # files = glob.glob(f'throughput_testing/gpu/pinned/uniform/{cache_type}_0.2/GCN_breakdown/{cache_type}-*-*-*-*.csv')
-    # dfs = []    
-    # for file in files:
-    #     dfs.append(pd.read_csv(file))
-
-    # df = pd.concat(dfs, ignore_index=True)
-    # print(df)
-    # # df = df[df.executors_per_store != 16]
-    # # df['acquire peer lock'] *= 1000
-    # g = sns.displot(data=df, x='dataloading', kind="ecdf", col='num_stores', hue='executors_per_store', col_wrap=2)
-    # # plt.xlim(0, 5)
-    # plt.tight_layout()
-    # plt.savefig(f'Lock_Throughput_conflicts.png', bbox_inches='tight', dpi=250)
-    # plt.clf()
-    # print(df)

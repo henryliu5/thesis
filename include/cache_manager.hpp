@@ -476,8 +476,9 @@ public:
                             auto atomic_name = atomic_finish_name(device_id, i, j).c_str();
                             std::atomic<int>* a = segment.find<std::atomic<int>>(atomic_name).first;
                             //!! Need to make sure worker is alive in this loop!
-                            while (a->load() < atomics_at_start[i][j] && worker_alive)
-                            ;
+                            while (a->load() < atomics_at_start[i][j] && worker_alive){
+                                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                            }
                         }
                     }
 

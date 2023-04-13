@@ -1,7 +1,7 @@
 import torch
 import dgl
 from typing import List, Optional, Dict
-from fast_inference.timer import Timer, export_dict_as_pd
+from fast_inference.timer import Timer, export_dict_as_pd, TRACES
 from fast_inference_cpp import CacheManager
 from fast_inference.device_cache import DeviceFeatureCache
 import time
@@ -80,10 +80,9 @@ class FeatureServer:
             peer = self.caches[i]
 
             with torch.cuda.stream(self.peer_streams[i]):
-                with Timer('acquire peer lock'):
-                    s = time.perf_counter()
-                    self.sync_cache_read_start(i)
-                    dur += time.perf_counter() - s
+                s = time.perf_counter()
+                self.sync_cache_read_start(i)
+                dur += time.perf_counter() - s
 
                 # Only transfer node ids that belong to that GPU
                 # peer_mask = gpu_mask & (node_ids % num_peers == i)
@@ -115,6 +114,10 @@ class FeatureServer:
             print('Waited for lock', dur)
             self.lock_conflicts += 1
 
+        peer_lock_trace_name = 'acquire peer lock'
+        if peer_lock_trace_name not in TRACES:
+            TRACES[peer_lock_trace_name] = []
+        TRACES[peer_lock_trace_name].append(dur)
         self.lock_conflict_trace['wait_time'].append(dur)
         # self.lock_conflict_trace['executor_id'].append(self.executor_id)
         # self.lock_conflict_trace['store_id'].append(self.store_id)
@@ -257,6 +260,8 @@ class FeatureServer:
     def reset_cache(self, *args):
         for k in self.profile_info.keys():
             self.profile_info[k] = []
+        for k in self.lock_conflict_trace.keys():
+            self.lock_conflict_trace[k] = []
 
 class CountingFeatServer(FeatureServer):
     cache_name = 'count'

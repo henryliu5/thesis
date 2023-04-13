@@ -4,7 +4,7 @@ from fast_inference.message import Message, MessageType, RequestPayload
 from fast_inference.request_generator import MessageType
 from fast_inference.feat_server import FeatureServer, ManagedCacheServer
 from fast_inference.sampler import InferenceSampler
-from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_dict_as_pd
+from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_dict_as_pd, export_timer_info, TRACES
 from torch.profiler import profile, record_function, ProfilerActivity
 from contextlib import nullcontext
 import time
@@ -51,16 +51,17 @@ class InferenceEngine(Process):
     def run(self):
         numa_info = get_numa_nodes_cores()
         # Pin just to first cpu in each core in numa node 0 (DGL approach)
-        pin_cores = [cpus[0] for core_id, cpus in numa_info[self.device_id % 2]]
+        # pin_cores = [cpus[0] for core_id, cpus in numa_info[self.device_id % 2]]
+        pin_cores = [cpu for core_id, cpus in numa_info[self.device_id % 2] for cpu in cpus]
         psutil.Process().cpu_affinity(pin_cores)
         print(f'engine {self.device_id}, cpu affinity', psutil.Process().cpu_affinity())
 
         assert(torch.is_inference_mode_enabled())
         # TODO change to num cpu threads / num inference engine
         # print(os.cpu_count()) # 64 on mew
-        torch.set_num_threads(os.cpu_count() // self.num_engines // 2)
-        # 3/25 I don't think changing interop should make difference
-        torch.set_num_interop_threads(os.cpu_count() // self.num_engines // 2)
+        torch.set_num_threads(os.cpu_count() // self.feature_store.executors_per_store)
+        # # 3/25 I don't think changing interop should make difference
+        torch.set_num_interop_threads(os.cpu_count() // self.feature_store.executors_per_store)
         # torch.set_num_interop_threads()
         print('using intra-op threads:', torch.get_num_threads())
         print('using inter-op threads', torch.get_num_interop_threads())
@@ -134,7 +135,14 @@ class InferenceEngine(Process):
                         if self.output_path != None and self.device_id == 0:
                             self.feature_store.export_profile(f'{self.output_path}/{self.model_name.upper()}_cache_info', {'name': self.dataset, 'batch_size': self.batch_size, 'trial': cur_trial})
                         # print_timer_info()    
-                        # clear_timers()
+                        #!! TODO replace GCN with model name
+                        export_timer_info(f'{self.output_path}/GCN_breakdown', {'cache_type': self.feature_store.cache_name,
+                                                                                                    'store_id': self.feature_store.store_id,
+                                                                                                    'executor_id': self.feature_store.executor_id,
+                                                                                                    'num_stores': len(self.feature_store.caches),
+                                                                                                    'executors_per_store': self.feature_store.executors_per_store})
+
+                        clear_timers()
                         # TODO reset feature store state
                         self.feature_store.reset_cache()
                         print(f"Engine {self.device_id}: finished trial {cur_trial}")
@@ -150,7 +158,7 @@ class InferenceEngine(Process):
                                                                                     'store_id': self.feature_store.store_id,
                                                                                     'executor_id': self.feature_store.executor_id,
                                                                                     'num_stores': len(self.feature_store.caches),
-                                                                                    'executors_per_store': 4}, 0)
+                                                                                    'executors_per_store': self.feature_store.executors_per_store}, 0)
         self.finish_barrier.wait()
 
 
