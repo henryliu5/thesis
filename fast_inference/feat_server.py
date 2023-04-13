@@ -25,7 +25,8 @@ class FeatureServer:
                  use_locking = False,
                  is_leader: bool = True,
                  total_stores: int = -1,
-                 executors_per_store: int = -1):
+                 executors_per_store: int = -1,
+                 use_pytorch_direct: bool = False):
         """ Initializes a new FeatureServer
 
         Args:
@@ -65,6 +66,8 @@ class FeatureServer:
         self.total_stores = total_stores
         self.executors_per_store = executors_per_store
         self.requests_handled = 0
+
+        self.use_pytorch_direct = use_pytorch_direct
 
     def get_peer_features(self, node_ids: torch.LongTensor, feat: str):
         if self.peer_streams is None:
@@ -187,17 +190,19 @@ class FeatureServer:
                         required_cpu_features = self.pinned_buf_dict[feat].narrow(0, 0, m.shape[0])
 
                 with Timer('feature gather'):
-                    if self.use_pinned_mem:
-                        # Places indices directly into pinned memory buffer
-                        torch.index_select(self.features[feat], 0, m.cpu(), out=required_cpu_features)
-                        # if not self.features[feat].is_pinned():
-                        #     # print(type(self.features[feat]))
-                        #     self.features[feat] = self.features[feat].pin_memory()
-                        #     # self.features[feat] = dgl.utils.pin_memory_inplace(self.features[feat])
-                        # required_cpu_features = dgl.utils.pin_memory.gather_pinned_tensor_rows(self.features[feat], m.to(self.device))
+                    if self.use_pytorch_direct:
+                        if not self.features[feat].is_pinned():
+                            # print(type(self.features[feat]))
+                            self.features[feat] = self.features[feat].pin_memory()
+                            # self.features[feat] = dgl.utils.pin_memory_inplace(self.features[feat])
+                        required_cpu_features = dgl.utils.pin_memory.gather_pinned_tensor_rows(self.features[feat], m.to(self.device))
                     else:
-                        #"slow mode"
-                        required_cpu_features = torch.index_select(self.features[feat], 0, m)
+                        if self.use_pinned_mem:
+                            # Places indices directly into pinned memory buffer
+                            torch.index_select(self.features[feat], 0, m.cpu(), out=required_cpu_features)
+                        else:
+                            #"slow mode"
+                            required_cpu_features = torch.index_select(self.features[feat], 0, m)
 
                 with Timer('CPU-GPU copy', track_cuda=True):
                     # Copy CPU features

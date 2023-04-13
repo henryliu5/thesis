@@ -6,7 +6,7 @@ from fast_inference.device_cache import DeviceFeatureCache
 from typing import List
 
 def create_feature_stores(cache_type: str, num_stores: int, executors_per_store: int, graph: dgl.DGLGraph, track_feature_types: List[str], cache_percent: float,
-                    use_pinned_mem: bool = True, profile_hit_rate: bool = False, pinned_buf_size: int = 150_000) -> List[FeatureServer]:
+                    use_pinned_mem: bool = True, profile_hit_rate: bool = False, pinned_buf_size: int = 150_000, use_pytorch_direct: bool = False) -> List[FeatureServer]:
     """Create num_stores feature stores and configure for P2P communication
 
     Args:
@@ -77,7 +77,7 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
                 additional_args['is_leader'] = False
 
             f = store_type(caches, num_nodes, features, torch.device(
-                'cuda', device_id), store_id, executor_id, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=profile_hit_rate, pinned_buf_size=pinned_buf_size, **additional_args)
+                'cuda', device_id), store_id, executor_id, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=profile_hit_rate, pinned_buf_size=pinned_buf_size, use_pytorch_direct=use_pytorch_direct, **additional_args)
             
             # if executor_id == 0:
             #     # mod partition best nodes across all GPUs

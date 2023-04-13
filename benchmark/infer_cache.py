@@ -90,7 +90,8 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
                                            cache_percent=cache_percent, 
                                            use_pinned_mem=use_pinned_mem, 
                                            profile_hit_rate=True, 
-                                           pinned_buf_size=1_000_000)
+                                           pinned_buf_size=1_000_000,
+                                           use_pytorch_direct=False)
             feat_server = stores[0][0]
         else:
             feat_server = None
