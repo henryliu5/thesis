@@ -22,6 +22,8 @@ import gc
 import argparse
 from contextlib import nullcontext
 import os
+import psutil
+from dgl.utils.internal import get_numa_nodes_cores
 
 class PipelinedDataloader(Process):
     def __init__(self, feature_store, device, num_nodes, cache_type, num_stores, num_executors_per_store, start_barrier):
@@ -32,10 +34,29 @@ class PipelinedDataloader(Process):
 
         self.cache_type = cache_type
         self.num_stores = num_stores
+        self.device_id = num_stores % torch.cuda.device_count()
         self.num_executors_per_store = num_executors_per_store
+        self.num_engines = num_stores * num_executors_per_store
         self.start_barrier = start_barrier
 
+    @torch.inference_mode()
     def run(self):
+        numa_info = get_numa_nodes_cores()
+        # Pin just to first cpu in each core in numa node 0 (DGL approach)
+        pin_cores = [cpu for core_id, cpus in numa_info[self.device_id % 2] for cpu in cpus ]
+        psutil.Process().cpu_affinity(pin_cores)
+        print(f'engine {self.device_id}, cpu affinity', psutil.Process().cpu_affinity())
+
+        assert(torch.is_inference_mode_enabled())
+        # TODO change to num cpu threads / num inference engine
+
+        torch.set_num_threads(os.cpu_count() // self.num_executors_per_store)
+        # # 3/25 I don't think changing interop should make difference
+        torch.set_num_interop_threads(os.cpu_count() // self.num_executors_per_store)
+        # torch.set_num_interop_threads()
+        print('using intra-op threads:', torch.get_num_threads())
+        print('using inter-op threads', torch.get_num_interop_threads())
+
         print('device id', self.feature_store.device_index, 'exec id', self.feature_store.executor_id)
         self.feature_store.start_manager()
 
@@ -46,8 +67,8 @@ class PipelinedDataloader(Process):
         use_prof = False
         enable_timers()
 
-        self.start_barrier.wait()
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
+            self.start_barrier.wait()
             for i in range(500):
                 required_nids = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
 
@@ -57,7 +78,7 @@ class PipelinedDataloader(Process):
                 self.feature_store.get_features(required_nids, ['feat'], None)
         
         if use_prof:
-            prof.export_chrome_trace(f'pipeline_trace_{self.device.index * self.feature_store.executor_id}.json')
+            prof.export_chrome_trace(f'microbench_trace_store_{self.feature_store.store_id}_executor_{self.feature_store.executor_id}.json')
         print('Lock conflicts', self.feature_store.lock_conflicts)
         export_dict_as_pd(self.feature_store.lock_conflict_trace, 'pipeline_conflicts', {'cache_type': self.cache_type, 
                                                                                          'store_id': self.feature_store.store_id, 
