@@ -1,5 +1,5 @@
-from fast_inference.dataset import InferenceDataset
 import torch as th
+from fast_inference.dataset import InferenceDataset
 import pytest
 
 @pytest.mark.skip(reason="slow test, run manually")
