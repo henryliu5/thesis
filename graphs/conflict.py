@@ -19,7 +19,9 @@ def timing():
     # df = df[df.executors_per_store != 16]
 
     df['feature gather (ms)'] = 1000 * df['feature gather']
-    g = sns.displot(data=df, x='feature gather (ms)', kind="ecdf", col='num_stores', hue='executors_per_store', col_wrap=2)
+    df['num GPUs'] = df['num_stores']
+    df['InferenceEngines per GPU'] = df['executors_per_store']
+    g = sns.displot(data=df, x='feature gather (ms)', kind="ecdf", col='num GPUs', hue='InferenceEngines per GPU', col_wrap=2)
     # plt.xlim(0, 5)
     plt.tight_layout()
     plt.savefig(f'Lock_Timing.png', bbox_inches='tight', dpi=250)
@@ -39,8 +41,12 @@ def contention():
     # df = df[df.executors_per_store != 16]
 
     df['wait_time (ms)'] = 1000 * df['wait_time']
-    g = sns.displot(data=df, x='wait_time (ms)', kind="ecdf", col='num_stores', hue='executors_per_store', col_wrap=2, log_scale=True)
+    df['num GPUs'] = df['num_stores']
+    df['InferenceEngines per GPU'] = df['executors_per_store']
+    g = sns.displot(data=df, x='wait_time (ms)', kind="ecdf", col='num GPUs', hue='InferenceEngines per GPU', col_wrap=2, log_scale=True)
     # plt.xlim(0, 5)
+    plt.suptitle(
+        f'Time spent waiting on lock acquisition (ms)')
     plt.tight_layout()
     plt.savefig(f'Lock_Conflicts.png', bbox_inches='tight', dpi=250)
     plt.clf()
