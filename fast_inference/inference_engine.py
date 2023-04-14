@@ -51,20 +51,21 @@ class InferenceEngine(Process):
     def run(self):
         numa_info = get_numa_nodes_cores()
         # Pin just to first cpu in each core in numa node 0 (DGL approach)
-        # pin_cores = [cpus[0] for core_id, cpus in numa_info[self.device_id % 2]]
-        pin_cores = [cpu for core_id, cpus in numa_info[self.device_id % 2] for cpu in cpus]
+        pin_cores = [cpus[0] for core_id, cpus in numa_info[self.device_id % 2]]
+        # pin_cores = [cpu for core_id, cpus in numa_info[self.device_id % 2] for cpu in cpus]
         psutil.Process().cpu_affinity(pin_cores)
         print(f'engine {self.device_id}, cpu affinity', psutil.Process().cpu_affinity())
 
         assert(torch.is_inference_mode_enabled())
         # TODO change to num cpu threads / num inference engine
         # print(os.cpu_count()) # 64 on mew
-        torch.set_num_threads(os.cpu_count() // self.feature_store.executors_per_store)
+        # torch.set_num_threads(os.cpu_count() // self.num_engines // 2)
+        torch.set_num_threads(os.cpu_count() // self.feature_store.executors_per_store // 2)
         # # 3/25 I don't think changing interop should make difference
-        torch.set_num_interop_threads(os.cpu_count() // self.feature_store.executors_per_store)
+        # torch.set_num_interop_threads(os.cpu_count() // self.feature_store.executors_per_store)
         # torch.set_num_interop_threads()
         print('using intra-op threads:', torch.get_num_threads())
-        print('using inter-op threads', torch.get_num_interop_threads())
+        # print('using inter-op threads', torch.get_num_interop_threads())
 
         # Need to re-pin the feature store buffer
         for k, v in self.feature_store.pinned_buf_dict.items():
@@ -78,7 +79,7 @@ class InferenceEngine(Process):
         #     assert(peer.nid_is_on_gpu.is_shared())
         #     assert(peer.cache_mapping.is_shared())
         #     assert(peer.cache['feat'].is_shared())
-
+        self.model_stream = torch.cuda.Stream(device=self.device, priority=-1)
         print('InferenceEngine', self.device_id, 'started')
         self.start_barrier.wait()
 
@@ -99,10 +100,10 @@ class InferenceEngine(Process):
 
                     timing_info['time_exec_started'] = time.perf_counter()
                     if req.msg_type == MessageType.INFERENCE or req.msg_type == MessageType.WARMUP:
-                        if requests_handled % update_window == 0:
-                            self.feature_store.update_cache()
-
                         with Timer('exec request'):
+                            if requests_handled % update_window == 0:
+                                self.feature_store.update_cache()
+
                             assert(isinstance(req.payload, RequestPayload))
                             payload = req.payload
                             mfgs = self.sampler.sample(payload.nids, payload.edges, use_gpu_sampling=True, device=self.device)
@@ -113,11 +114,10 @@ class InferenceEngine(Process):
                                 inputs = inputs['feat']
                             
                             with Timer('model'):
-                                # self.feature_store.peer_lock[self.device_id].acquire()
-                                # time.sleep(0.001)
-                                # self.feature_store.peer_lock[self.device_id].release()
-                                x = self.model(mfgs, inputs)
-                                x.cpu()
+                                with torch.cuda.stream(self.model_stream):
+                                    x = self.model(mfgs, inputs)
+                                    x.cpu()
+                                torch.cuda.current_stream().wait_stream(self.model_stream)
                         requests_handled += 1
 
                     timing_info['time_exec_finished'] = time.perf_counter()
@@ -151,7 +151,7 @@ class InferenceEngine(Process):
                         self.trial_barriers[cur_trial].wait()
                         cur_trial += 1
                         
-        if use_prof:
+        if use_prof and self.feature_store.executor_id == 0:
             prof.export_chrome_trace(f'multiprocess_trace_store_{self.device_id}_executor_{self.feature_store.executor_id}.json')
 
         export_dict_as_pd(self.feature_store.lock_conflict_trace, 'pipeline_trace', {'cache_type': self.feature_store.cache_name,

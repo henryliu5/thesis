@@ -144,6 +144,7 @@ private:
     int cache_size;
     int num_engines;
     int device_id;
+    int executor_id;
     // int update_frequency;
     // int decay_frequency;
     // int staging_area_size;
@@ -192,7 +193,7 @@ private:
 
 
 public:
-    CacheManager(const int num_total_nodes, const int cache_size, const int device_id, const int num_engines, bool use_gpu_transfer, bool use_locking, const int total_stores, const int executors_per_store)
+    CacheManager(const int num_total_nodes, const int cache_size, const int device_id, const int num_engines, bool use_gpu_transfer, bool use_locking, const int total_stores, const int executors_per_store, const int executor_id)
         : cache_size(cache_size)
         , worker_alive(true)
         , gpu_q()
@@ -211,6 +212,7 @@ public:
         , use_locking(use_locking)
         , total_stores(total_stores)
         , executors_per_store(executors_per_store)
+        , executor_id(executor_id)
     {
         auto lock_name = ("fast_inference_mutex_gpu_" + std::to_string(device_id));
 
@@ -496,7 +498,7 @@ public:
                     ASSERT(nids_to_add.min().item<long>() >= 0 && nids_to_add.max().item<long>() < cache_mask_device.sizes()[0], "nids to add out of bounds");
                     // Now write 1's
                     cache_mask_device.index_put_({nids_to_add}, true);
-
+                    cout << "exec " << executor_id << " added " << num_to_add << " nodes to cache" << endl;
                     // cache_mutex.unlock();
                     if(use_locking){
                         myStream.synchronize();

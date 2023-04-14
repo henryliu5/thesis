@@ -7,7 +7,6 @@ from fast_inference.device_cache import DeviceFeatureCache
 import time
 import functools
 
-
 class FeatureServer:
     cache_name = 'static'
     def __init__(self, 
@@ -290,7 +289,11 @@ class CountingFeatServer(FeatureServer):
         # assert(self.cache_mapping.is_shared())
 
         if not self.peer_lock is None:
-            self.peer_lock[self.device_index].writer_lock.acquire()
+            if hasattr(self.peer_lock[self.device_index], 'acquire'):
+                self.peer_lock[self.device_index].acquire()
+            else:
+                self.peer_lock[self.device_index].writer_lock.acquire()
+            # self.peer_lock[self.device_index].writer_lock.acquire()
         [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
 
         if len(self.caches) > 1:
@@ -333,8 +336,11 @@ class CountingFeatServer(FeatureServer):
             [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
             
         if not self.peer_lock is None:
-            self.peer_lock[self.device_index].reader_lock.release()
-
+            if hasattr(self.peer_lock[self.device_index], 'release'):
+                self.peer_lock[self.device_index].release()
+            else:
+                self.peer_lock[self.device_index].reader_lock.release()
+            # self.peer_lock[self.device_index].reader_lock.release()
         torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
         torch.cuda.synchronize(self.device)
 
@@ -355,7 +361,8 @@ class CountingFeatServer(FeatureServer):
     
     def reset_cache(self):
         super().reset_cache()
-        self.counts *= 0
+        if self.is_leader:
+            self.counts *= 0
         # self.set_static_cache(self.original_cache_indices, list(self.cache.keys()))
 
     def sync_cache_read_start(self, index: int):
@@ -366,8 +373,11 @@ class CountingFeatServer(FeatureServer):
         """
         # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
         if not self.peer_lock is None:
-            self.peer_lock[index].reader_lock.acquire()
-
+            if hasattr(self.peer_lock[index], 'acquire'):
+                self.peer_lock[index].acquire()
+            else:
+                self.peer_lock[index].reader_lock.acquire()
+            # self.peer_lock[index].reader_lock.acquire()
     def sync_cache_read_end(self, index: int):
         """Releease relevant synchronization resources related to self.sync_cache_read_start
 
@@ -376,7 +386,11 @@ class CountingFeatServer(FeatureServer):
         """
         # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
         if not self.peer_lock is None:
-            self.peer_lock[index].reader_lock.release()
+            if hasattr(self.peer_lock[index], 'release'):
+                self.peer_lock[index].release()
+            else:
+                self.peer_lock[index].reader_lock.release()
+            # self.peer_lock[index].reader_lock.release()
     
 class LFUServer(FeatureServer):
 
@@ -443,7 +457,8 @@ class ManagedCacheServer(FeatureServer):
     cache_name = 'cpp'
     def init_counts(self, num_total_nodes):
         self.num_nodes = num_total_nodes
-        self.counts = torch.zeros(num_total_nodes, dtype=torch.short, device=self.device)
+        if self.is_leader:
+            self.counts = torch.zeros(num_total_nodes, dtype=torch.int8, device=self.device)
 
         self.topk_stream = None
         self.update_stream = None
@@ -463,7 +478,7 @@ class ManagedCacheServer(FeatureServer):
         reverse_mapping = self.caches[self.store_id].reverse_mapping
         cache_size = self.caches[self.store_id].cache_size
         for feat in cache:
-            self.cache_manager = CacheManager(self.num_nodes, cache_size, self.device_index, len(self.caches), True, self.use_locking, self.total_stores, self.executors_per_store)
+            self.cache_manager = CacheManager(self.num_nodes, cache_size, self.device_index, len(self.caches), True, self.use_locking, self.total_stores, self.executors_per_store, self.executor_id)
             self.cache_manager.set_cache(self.features[feat], cache_mask, cache_mapping, reverse_mapping, cache[feat])
             self.cache_manager.set_cache_candidates(self.is_cache_candidate)
             break
@@ -530,6 +545,7 @@ class ManagedCacheServer(FeatureServer):
                 # !! WARNING: Must use "m" here!! Since the node ids and mask are on GPU, the CPU node id tensor
                 # !! must be fully materialized by the time the tensor is placed on the queue
 
+            # if self.is_leader:
             self.cache_manager.place_feats_in_queue(newly_transferred_feats, newly_transferred_nids)
 
                 # # Can comment in below and comment out above to use syncrhonous update (async in stream)
@@ -574,7 +590,8 @@ class ManagedCacheServer(FeatureServer):
 
     def reset_cache(self):
         super().reset_cache()
-        self.counts *= 0
+        if self.is_leader:
+            self.counts *= 0
         # if self.is_leader:
         #     self.set_static_cache(self.original_cache_indices, list(self.cache.keys()))
         # for feat in self.cache:

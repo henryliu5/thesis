@@ -14,7 +14,7 @@ void CacheManager::gilRelease(std::function<void()> f) {
 
 void init_manager(py::module &m){
     py::class_<CacheManager>(m, "CacheManager")
-        .def(py::init<const int, const int, const int, const int, bool, bool, const int, const int>())
+        .def(py::init<const int, const int, const int, const int, bool, bool, const int, const int, const int>())
         .def("set_cache", &CacheManager::setCache)
         .def("wait_for_queue", &CacheManager::waitForQueue)
         .def("thread_enter", &CacheManager::threadEnter)

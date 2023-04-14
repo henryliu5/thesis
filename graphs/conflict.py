@@ -6,7 +6,27 @@ import matplotlib.pyplot as plt
 import glob
 plt.style.use('seaborn')
 
-if __name__ == '__main__':
+def timing():
+    cache_type = 'cpp_lock'
+
+    files = glob.glob(f'pipeline_dataload_time/{cache_type}-*-*-*-*.csv')
+    dfs = []    
+    for file in files:
+        dfs.append(pd.read_csv(file))
+
+    
+    df = pd.concat(dfs, ignore_index=True)
+    # df = df[df.executors_per_store != 16]
+
+    df['feature gather (ms)'] = 1000 * df['feature gather']
+    g = sns.displot(data=df, x='feature gather (ms)', kind="ecdf", col='num_stores', hue='executors_per_store', col_wrap=2)
+    # plt.xlim(0, 5)
+    plt.tight_layout()
+    plt.savefig(f'Lock_Timing.png', bbox_inches='tight', dpi=250)
+    plt.clf()
+    print(df)
+
+def contention():
     cache_type = 'cpp_lock'
 
     files = glob.glob(f'pipeline_conflicts/{cache_type}-*-*-*-*.csv')
@@ -25,3 +45,7 @@ if __name__ == '__main__':
     plt.savefig(f'Lock_Conflicts.png', bbox_inches='tight', dpi=250)
     plt.clf()
     print(df)
+
+if __name__ == '__main__':
+    contention()
+    timing()

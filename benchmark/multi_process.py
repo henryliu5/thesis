@@ -48,16 +48,18 @@ if __name__ == '__main__':
                             help="Number of executors per feature store")
     parser.add_argument('-g', '--gpus', type=int, default=torch.cuda.device_count(),
                             help="Number of feature stores")
+    parser.add_argument('-d', '--use_pytorch_direct', action='store_true',
+                           help='Enable cache pinned memory optimization')
     args = parser.parse_args()
 
     num_devices = args.gpus
     executors_per_store = args.executors_per_store
     num_engines = num_devices * executors_per_store
 
-    MULTIPLIER = 2
+    MULTIPLIER = 1
     dataset = 'ogbn-products'
     batch_size = 256
-    max_iters = 512000
+    max_iters = 1000
     infer_percent = 0.1 * MULTIPLIER
     model_name = 'gcn'
     subgraph_bias = args.subgraph_bias
@@ -119,7 +121,8 @@ if __name__ == '__main__':
     model.eval()
 
     num_nodes = g.num_nodes()
-    feature_stores = create_feature_stores(cache_type, num_devices, executors_per_store, g, ['feat'], cache_percent, use_pinned_mem, profile_hit_rate=True, pinned_buf_size=1_000_000)
+    feature_stores = create_feature_stores(cache_type, num_devices, executors_per_store, g, ['feat'], cache_percent, use_pinned_mem, profile_hit_rate=True, pinned_buf_size=1_000_000, 
+                                           use_pytorch_direct=args.use_pytorch_direct)
 
     logical_g = dgl.graph(g.edges())
 

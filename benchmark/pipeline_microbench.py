@@ -1,13 +1,8 @@
 ''' Benchmark for multiprocessing '''
-from fast_inference.dataset import InferenceDataset, FastEdgeRepr
-from fast_inference.models.factory import load_model
-from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, ManagedCacheServer
-from fast_inference.util import create_feature_stores
-from fast_inference.inference_engine import InferenceEngine
-from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_dict_as_pd
-from fast_inference.request_generator import RequestGenerator, ResponseRecipient
-import dgl
 import torch
+from fast_inference.util import create_feature_stores
+from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_dict_as_pd, export_timer_info
+import dgl
 from tqdm import tqdm
 from torch.profiler import profile, record_function, ProfilerActivity
 import time
@@ -43,19 +38,28 @@ class PipelinedDataloader(Process):
     def run(self):
         numa_info = get_numa_nodes_cores()
         # Pin just to first cpu in each core in numa node 0 (DGL approach)
-        pin_cores = [cpu for core_id, cpus in numa_info[self.device_id % 2] for cpu in cpus ]
+        # pin_cores = [cpu for core_id, cpus in numa_info[self.device_id % 2] for cpu in cpus ]
+        pin_cores = [cpus[0] for core_id, cpus in numa_info[self.device_id % 2]]
+        # pin_cores = [cpus[0] for core_id, cpus in numa_info[0]] + [cpus[0] for core_id, cpus in numa_info[1]]
         psutil.Process().cpu_affinity(pin_cores)
         print(f'engine {self.device_id}, cpu affinity', psutil.Process().cpu_affinity())
 
         assert(torch.is_inference_mode_enabled())
         # TODO change to num cpu threads / num inference engine
+        # if we divide by num executors per store,
+        # executors -> threads
+        # 1 -> 64
+        # 2 -> 32
+        # 4 -> 16
+        # 8 -> 8
+        # mapping = {1: 32, 2: 32, 4: 32, 8: 16}
+        # torch.set_num_threads(min(16, os.cpu_count() // self.num_executors_per_store) - 2)
+        torch.set_num_threads(os.cpu_count() // self.num_executors_per_store // 2)
+        # torch.set_num_threads(mapping[self.num_executors_per_store])
 
-        torch.set_num_threads(os.cpu_count() // self.num_executors_per_store)
+        # torch.set_num_threads(8)
         # # 3/25 I don't think changing interop should make difference
-        torch.set_num_interop_threads(os.cpu_count() // self.num_executors_per_store)
-        # torch.set_num_interop_threads()
         print('using intra-op threads:', torch.get_num_threads())
-        print('using inter-op threads', torch.get_num_interop_threads())
 
         print('device id', self.feature_store.device_index, 'exec id', self.feature_store.executor_id)
         self.feature_store.start_manager()
@@ -69,13 +73,14 @@ class PipelinedDataloader(Process):
 
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
             self.start_barrier.wait()
-            for i in range(500):
-                required_nids = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
+            for i in range(300):
+                with Timer('dataload'):
+                    required_nids = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
 
-                if i % 10 == 0:
-                    self.feature_store.update_cache()
+                    if i % 10 == 0:
+                        self.feature_store.update_cache()
 
-                self.feature_store.get_features(required_nids, ['feat'], None)
+                    self.feature_store.get_features(required_nids, ['feat'], None)
         
         if use_prof:
             prof.export_chrome_trace(f'microbench_trace_store_{self.feature_store.store_id}_executor_{self.feature_store.executor_id}.json')
@@ -85,6 +90,11 @@ class PipelinedDataloader(Process):
                                                                                          'executor_id': self.feature_store.executor_id,
                                                                                          'num_stores': self.num_stores,
                                                                                          'executors_per_store': self.num_executors_per_store}, 0)
+        export_timer_info('pipeline_dataload_time', {'cache_type': self.cache_type, 
+                                              'store_id': self.feature_store.store_id, 
+                                              'executor_id': self.feature_store.executor_id,
+                                              'num_stores': self.num_stores,
+                                              'executors_per_store': self.num_executors_per_store})
 
 
 if __name__ == '__main__':

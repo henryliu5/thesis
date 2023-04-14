@@ -25,11 +25,17 @@ def main(paths, model_name, graph_name, batch_size, file_suffix='', policy_names
     # df['total (ms)'] = df['total'] * 1000
     print(df)
 
+    suffix = "(uniform sampled)"
+    if 'bias' in path:
+        suffix = "(5 subgraphs sampled, bias 0.8)"
+
     df = df.reset_index()
     num_gpus = 2
-    for i in range(1, num_gpus + 1):
+    for i in range(2, 3):
         plot_df = df.loc[df['num_devices'] == i]
-        sns.barplot(data=plot_df, x='executors_per_store', y='throughput (req/s)', hue='policy')
+        g = sns.barplot(data=plot_df, x='executors_per_store', y='throughput (req/s)', hue='policy', errorbar='pi')
+        g.set_title(
+        f'Throughput {suffix} | {model_name} {graph_name} batch size: {batch_size}')
         plt.tight_layout()
         plt.savefig(f'throughput_{model_name}{file_suffix}_gpus_{i}.png',
                     bbox_inches='tight', dpi=250)
@@ -47,22 +53,28 @@ if __name__ == '__main__':
     for pin in pinned:
         pin_stripped = pin.replace("/", "")
         for c in cache_ratios:
+            # dir = 'throughput_testing'
+            # dir = 'only_pin_no_thread_reduce'
+            # dir = 'throughput_direct'
+            # dir = 'throughput_pin_numa_cpu_0_reduce_per_executor'
+            # dir = 'throughput_pin_numa_cpu_0_reduce_per_executor_with_min'
+            dir = 'throughput_pin_numa_cpu_0_reduce_by_engines'
             main([
                 #  f'testing/gpu/{pin}uniform/baseline',
-                f'throughput_testing/gpu/{pin}bias_0.8/static_{c}',
-                f'throughput_testing/gpu/{pin}bias_0.8/count_{c}',
-                f'throughput_testing/gpu/{pin}bias_0.8/cpp_{c}',
-                f'throughput_testing/gpu/{pin}bias_0.8/cpp_lock_{c}',
+                f'{dir}/gpu/{pin}bias_0.8/static_{c}',
+                f'{dir}/gpu/{pin}bias_0.8/count_{c}',
+                f'{dir}/gpu/{pin}bias_0.8/cpp_{c}',
+                f'{dir}/gpu/{pin}bias_0.8/cpp_lock_{c}',
                 # f'testing/gpu/{pin}bias_0.8/lfu_{c}',
                 # f'testing/gpu/{pin}bias_0.8/hybrid_{c}',
                 ], 'GCN', 'ogbn-products', 256, f'_bias_0.8_{pin_stripped}c{c}', ['static', 'count', 'Lock-free', 'R/W Lock'])
 
             main([
                 #  f'testing/gpu/{pin}uniform/baseline',
-                f'throughput_testing/gpu/{pin}uniform/static_{c}',
-                f'throughput_testing/gpu/{pin}uniform/count_{c}',
-                f'throughput_testing/gpu/{pin}uniform/cpp_{c}',
-                f'throughput_testing/gpu/{pin}uniform/cpp_lock_{c}',
+                f'{dir}/gpu/{pin}uniform/static_{c}',
+                f'{dir}/gpu/{pin}uniform/count_{c}',
+                f'{dir}/gpu/{pin}uniform/cpp_{c}',
+                f'{dir}/gpu/{pin}uniform/cpp_lock_{c}',
                 # f'testing/gpu/{pin}uniform/lfu_{c}',
                 # f'testing/gpu/{pin}uniform/hybrid_{c}',
                 ], 'GCN', 'ogbn-products', 256, f'_uniform_{pin_stripped}c{c}', ['static', 'count', 'Lock-free', 'R/W Lock'])

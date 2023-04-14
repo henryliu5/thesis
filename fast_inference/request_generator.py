@@ -43,7 +43,7 @@ class RequestGenerator(Process):
         WARMUPS = 3
         print('Doing warmups...')
         for _ in range(WARMUPS):
-            for i in tqdm(range(0, min(n, 300 * self.batch_size), self.batch_size)):
+            for i in tqdm(range(0, min(n, 150 * self.batch_size), self.batch_size)):
                 with Timer('send batch'):
                     if i + self.batch_size >= n:
                         continue

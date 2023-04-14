@@ -37,6 +37,7 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
     elif cache_type == 'count':
         store_type = CountingFeatServer
         from fast_inference.rwlock import RWLock
+        from torch.multiprocessing import Lock
         if num_stores == 1 and executors_per_store == 1:
             additional_args['peer_lock'] = None
         else:
