@@ -16,7 +16,11 @@ class DeviceFeatureCache:
     cache_mapping: torch.Tensor
     reverse_mapping: torch.Tensor
     cache: Dict[str, torch.Tensor]
+
+    is_cache_candidate: torch.Tensor
+
     device: torch.device
+
     '''
     Caches have an id, where a cache will hold all nids s.t. nid % total_caches == cache_id
     #TODO add check to make sure this is always the case
@@ -42,4 +46,5 @@ class DeviceFeatureCache:
         for feat in feats:
             cache[feat] = feats[feat][init_nids.cpu()].to(device)
 
-        return DeviceFeatureCache(cache_size, cache_mask, cache_mapping, reverse_mapping, cache, device, cache_id, total_caches)
+        is_cache_candidate = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+        return DeviceFeatureCache(cache_size, cache_mask, cache_mapping, reverse_mapping, cache, is_cache_candidate, device, cache_id, total_caches)

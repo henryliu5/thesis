@@ -467,7 +467,7 @@ class ManagedCacheServer(FeatureServer):
         self.topk_started = False
         self.topk_processed = False
 
-        self.is_cache_candidate = torch.zeros(self.num_nodes, dtype=torch.bool, device=self.device)
+        self.is_cache_candidate = self.caches[self.store_id].is_cache_candidate
         if self.use_locking:
             self.cache_name = 'cpp_lock'
 

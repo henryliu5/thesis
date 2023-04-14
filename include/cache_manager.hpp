@@ -379,7 +379,7 @@ public:
                     // TODO add setting to enable mutex or use atomics
                     // cache_mutex.lock();
                     if(use_locking){
-                        myStream.synchronize();
+                        // myStream.synchronize();
                         ASSERT(local_ipc_mutex != 0, "failed pointer nonzero");
                         local_ipc_mutex->lock();
                     } else {
@@ -422,7 +422,7 @@ public:
                     const float THRESHOLD = 0.01;
                     if((float) nids_to_add.sizes()[0] / (float) cache_size <= THRESHOLD){
                         if(use_locking){
-                            myStream.synchronize();
+                            // myStream.synchronize();
                             local_ipc_mutex->unlock();
                         } else {
                             local_ipc_mutex->unlock();
@@ -444,7 +444,7 @@ public:
                     if(num_to_add == 0){
                         // cache_mutex.unlock();
                         if(use_locking){
-                            myStream.synchronize();
+                            // myStream.synchronize();
                             local_ipc_mutex->unlock();
                         } else {
                             local_ipc_mutex->unlock();
@@ -498,7 +498,7 @@ public:
                     ASSERT(nids_to_add.min().item<long>() >= 0 && nids_to_add.max().item<long>() < cache_mask_device.sizes()[0], "nids to add out of bounds");
                     // Now write 1's
                     cache_mask_device.index_put_({nids_to_add}, true);
-                    cout << "exec " << executor_id << " added " << num_to_add << " nodes to cache" << endl;
+                    // cout << "exec " << executor_id << " added " << num_to_add << " nodes to cache" << endl;
                     // cache_mutex.unlock();
                     if(use_locking){
                         myStream.synchronize();
