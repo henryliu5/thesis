@@ -2,7 +2,7 @@ import torch
 import dgl
 from typing import List, Optional, Dict
 from fast_inference.timer import Timer, export_dict_as_pd, TRACES
-from fast_inference_cpp import CacheManager
+from fast_inference_cpp import CacheManager, SHMLocks
 from fast_inference.device_cache import DeviceFeatureCache
 import time
 import functools
@@ -277,6 +277,9 @@ class CountingFeatServer(FeatureServer):
         self.topk_started = False
         print('FeatureStore', self.device_index, 'initialized counts')
 
+    def init_locks(self):
+        self.locks = SHMLocks()
+
     def update_cache(self):
         if not self.is_leader:
             return
@@ -288,11 +291,14 @@ class CountingFeatServer(FeatureServer):
         # assert(self.nid_is_on_gpu.is_shared())
         # assert(self.cache_mapping.is_shared())
 
-        if not self.peer_lock is None:
-            if hasattr(self.peer_lock[self.device_index], 'acquire'):
-                self.peer_lock[self.device_index].acquire()
-            else:
-                self.peer_lock[self.device_index].writer_lock.acquire()
+        self.locks.write_lock(self.device_index)
+
+        # write_lock(self.device_index)
+        # if not self.peer_lock is None:
+        #     if hasattr(self.peer_lock[self.device_index], 'acquire'):
+        #         self.peer_lock[self.device_index].acquire()
+        #     else:
+        #         self.peer_lock[self.device_index].writer_lock.acquire()
             # self.peer_lock[self.device_index].writer_lock.acquire()
         [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
 
@@ -335,11 +341,13 @@ class CountingFeatServer(FeatureServer):
 
             [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
             
-        if not self.peer_lock is None:
-            if hasattr(self.peer_lock[self.device_index], 'release'):
-                self.peer_lock[self.device_index].release()
-            else:
-                self.peer_lock[self.device_index].reader_lock.release()
+        self.locks.write_unlock(self.device_index)
+        # write_unlock(self.device_index)
+        # if not self.peer_lock is None:
+        #     if hasattr(self.peer_lock[self.device_index], 'release'):
+        #         self.peer_lock[self.device_index].release()
+        #     else:
+        #         self.peer_lock[self.device_index].reader_lock.release()
             # self.peer_lock[self.device_index].reader_lock.release()
         torch.div(self.counts, 2, rounding_mode='floor', out=self.counts)
         torch.cuda.synchronize(self.device)
@@ -372,11 +380,13 @@ class CountingFeatServer(FeatureServer):
             index (int): Device index to be read from
         """
         # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
-        if not self.peer_lock is None:
-            if hasattr(self.peer_lock[index], 'acquire'):
-                self.peer_lock[index].acquire()
-            else:
-                self.peer_lock[index].reader_lock.acquire()
+        self.locks.read_lock(index)
+        # read_lock(index)
+        # if not self.peer_lock is None:
+            # if hasattr(self.peer_lock[index], 'acquire'):
+            #     self.peer_lock[index].acquire()
+            # else:
+            #     self.peer_lock[index].reader_lock.acquire()
             # self.peer_lock[index].reader_lock.acquire()
     def sync_cache_read_end(self, index: int):
         """Releease relevant synchronization resources related to self.sync_cache_read_start
@@ -385,11 +395,13 @@ class CountingFeatServer(FeatureServer):
             index (int): Device index to be read from
         """
         # [torch.cuda.synchronize(i) for i in range(torch.cuda.device_count())]
-        if not self.peer_lock is None:
-            if hasattr(self.peer_lock[index], 'release'):
-                self.peer_lock[index].release()
-            else:
-                self.peer_lock[index].reader_lock.release()
+        self.locks.read_unlock(index)
+        # read_unlock(index)
+        # if not self.peer_lock is None:
+        #     if hasattr(self.peer_lock[index], 'release'):
+        #         self.peer_lock[index].release()
+        #     else:
+        #         self.peer_lock[index].reader_lock.release()
             # self.peer_lock[index].reader_lock.release()
     
 class LFUServer(FeatureServer):

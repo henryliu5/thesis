@@ -58,7 +58,8 @@ if __name__ == '__main__':
             # dir = 'throughput_direct'
             # dir = 'throughput_pin_numa_cpu_0_reduce_per_executor'
             # dir = 'throughput_pin_numa_cpu_0_reduce_per_executor_with_min'
-            dir = 'throughput_pin_numa_cpu_0_reduce_by_engines'
+            # dir = 'throughput_pin_numa_cpu_0_reduce_by_engines'
+            dir = 'multiple_throughput'
             main([
                 #  f'testing/gpu/{pin}uniform/baseline',
                 f'{dir}/gpu/{pin}bias_0.8/static_{c}',
@@ -67,7 +68,7 @@ if __name__ == '__main__':
                 f'{dir}/gpu/{pin}bias_0.8/cpp_lock_{c}',
                 # f'testing/gpu/{pin}bias_0.8/lfu_{c}',
                 # f'testing/gpu/{pin}bias_0.8/hybrid_{c}',
-                ], 'GCN', 'ogbn-products', 256, f'_bias_0.8_{pin_stripped}c{c}', ['static', 'count', 'Lock-free', 'R/W Lock'])
+                ], 'GCN', 'ogbn-products', 128, f'_bias_0.8_{pin_stripped}c{c}', ['Static', 'Frequency Prefetch', 'Frequency Lock-free', 'Frequency R/W Lock'])
 
             main([
                 #  f'testing/gpu/{pin}uniform/baseline',
@@ -77,4 +78,4 @@ if __name__ == '__main__':
                 f'{dir}/gpu/{pin}uniform/cpp_lock_{c}',
                 # f'testing/gpu/{pin}uniform/lfu_{c}',
                 # f'testing/gpu/{pin}uniform/hybrid_{c}',
-                ], 'GCN', 'ogbn-products', 256, f'_uniform_{pin_stripped}c{c}', ['static', 'count', 'Lock-free', 'R/W Lock'])
+                ], 'GCN', 'ogbn-products', 128, f'_uniform_{pin_stripped}c{c}', ['Static', 'Frequency Prefetch', 'Frequency Lock-free', 'Frequency R/W Lock'])

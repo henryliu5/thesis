@@ -2,7 +2,7 @@ import torch
 from torch.multiprocessing import Process, Queue, Barrier
 from fast_inference.message import Message, MessageType, RequestPayload
 from fast_inference.request_generator import MessageType
-from fast_inference.feat_server import FeatureServer, ManagedCacheServer
+from fast_inference.feat_server import FeatureServer, ManagedCacheServer, CountingFeatServer
 from fast_inference.sampler import InferenceSampler
 from fast_inference.timer import Timer, enable_timers, clear_timers, print_timer_info, export_dict_as_pd, export_timer_info, TRACES
 from torch.profiler import profile, record_function, ProfilerActivity
@@ -73,6 +73,8 @@ class InferenceEngine(Process):
 
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
+        elif type(self.feature_store) == CountingFeatServer:
+            self.feature_store.init_locks()
 
         # # Check that feature stores are sharing information correctly
         # for peer in self.feature_store.caches:

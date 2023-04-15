@@ -34,6 +34,8 @@ class PipelinedDataloader(Process):
     def run(self):
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
+        if type(self.feature_store) == CountingFeatServer:
+            self.feature_store.init_locks()
 
         # print(self.feature_store.cache['feat'].is_shared())
 

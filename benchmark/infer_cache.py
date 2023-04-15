@@ -99,6 +99,8 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         if feat_server:
             if cache_type == 'cpp':
                 feat_server.start_manager()
+            elif cache_type == 'count':
+                feat_server.init_locks()
 
             k = 2000
             if name == 'ogbn-papers100M':

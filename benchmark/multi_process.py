@@ -56,10 +56,10 @@ if __name__ == '__main__':
     executors_per_store = args.executors_per_store
     num_engines = num_devices * executors_per_store
 
-    MULTIPLIER = 1
+    MULTIPLIER = 2
     dataset = 'ogbn-products'
-    batch_size = 256
-    max_iters = 1000
+    batch_size = 128
+    max_iters = 2000
     infer_percent = 0.1 * MULTIPLIER
     model_name = 'gcn'
     subgraph_bias = args.subgraph_bias

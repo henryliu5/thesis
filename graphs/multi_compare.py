@@ -14,7 +14,7 @@ cache_types = [
 
 dfs = []    
 for c in cache_types:
-    files = glob.glob(f'throughput_pin_numa_cpu_0_reduce_by_engines/gpu/pinned/uniform/{c}_0.2/GCN_breakdown/{c}-*-*-*-*.csv')
+    files = glob.glob(f'multiple_throughput/gpu/pinned/uniform/{c}_0.2/GCN_breakdown/{c}-*-*-*-*.csv')
     for file in files:
         dfs.append(pd.read_csv(file))
 

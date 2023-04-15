@@ -3,6 +3,7 @@
 #include <boost/interprocess/managed_shared_memory.hpp>
 #include <boost/interprocess/sync/interprocess_sharable_mutex.hpp>
 #include <iostream>
+#include <vector>
 
 using namespace boost::interprocess;
 using std::cout, std::endl;
@@ -35,5 +36,43 @@ inline void shmSetup(int num_stores, int executors_per_store){
         }
     }
 }
+
+class SHMLocks{
+
+    std::vector<interprocess_sharable_mutex*> interprocess_mutexes;
+    managed_shared_memory segment;
+
+public:
+
+    SHMLocks() : segment(open_only, "fast_inference_shared_mem")
+        {
+        const int MAX_STORES = 64;
+        for(int i = 0; i < MAX_STORES; i++){
+            auto lock_name = ("fast_inference_mutex_gpu_" + std::to_string(i)).c_str();
+            interprocess_sharable_mutex* mutex = segment.find<interprocess_sharable_mutex>(lock_name).first;
+            if(mutex == nullptr){
+                break;
+            }
+            cout << "Finding lock: " << lock_name << endl;
+            interprocess_mutexes.push_back(mutex);
+        }
+    }
+
+    void readLock(int index){
+        interprocess_mutexes[index]->lock_sharable();
+    }
+
+    void readUnlock(int index){
+        interprocess_mutexes[index]->unlock_sharable();
+    }
+
+    void writeLock(int index){
+        interprocess_mutexes[index]->lock();
+    }
+
+    void writeUnlock(int index){
+        interprocess_mutexes[index]->unlock();
+    }
+};
 
 #endif
