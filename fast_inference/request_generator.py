@@ -6,6 +6,7 @@ from tqdm import tqdm
 import time
 from fast_inference.dataset import InferenceDataset, FastEdgeRepr
 from fast_inference.message import Message, MessageType, RequestPayload
+import numpy as np
 
 
 class RequestGenerator(Process):
@@ -29,10 +30,10 @@ class RequestGenerator(Process):
         # self.trace = infer_data.create_inference_trace(subgraph_bias=None)
 
         torch.set_num_threads(1)
-        if self.rate == 0:
-            delay_between_requests = 0
-        else:
-            delay_between_requests = 1 / self.rate
+        # if self.rate == 0:
+        #     delay_between_requests = 0
+        # else:
+        #     delay_between_requests = 1 / self.rate
         enable_timers()
         
         print('Request generator waiting')
@@ -77,7 +78,10 @@ class RequestGenerator(Process):
                     features = self.trace.features[i:i+self.batch_size]
                     edges = self.trace.edges.get_batch(i, i + self.batch_size)
                     batch_end = time.perf_counter()
-                    time.sleep(max(delay_between_requests - (batch_end - batch_start), 0))
+
+                    if self.rate != 0:
+                        delay = np.random.exponential(1 / self.rate)
+                        time.sleep(max(delay - (batch_end - batch_start), 0))
 
                     # req = Request(nids, features, edges, i, trial, RequestType.INFERENCE, time.perf_counter())
                     request = Message(id=i,

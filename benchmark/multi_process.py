@@ -50,6 +50,9 @@ if __name__ == '__main__':
                             help="Number of feature stores")
     parser.add_argument('-d', '--use_pytorch_direct', action='store_true',
                            help='Enable cache pinned memory optimization')
+    parser.add_argument('-r', '--rate', type=int, default=0,
+                           help='Request rate, 0 for unbounded')
+    
     args = parser.parse_args()
 
     num_devices = args.gpus
@@ -97,7 +100,11 @@ if __name__ == '__main__':
     # trace.edges = FastEdgeRepr(in_edge_endpoints, in_edge_count, out_edge_endpoints, out_edge_count)
     # print('Creating fast edges done in', time.time() - s)
 
-    request_queue = Queue(2 * num_engines)
+    if args.rate == 0:
+        request_queue = Queue(2 * num_engines)
+    else:
+        request_queue = Queue()
+
     response_queue = Queue()
     # # Request generator + Inference Engines + Response recipient
     start_barrier = Barrier(2 + num_engines)
@@ -106,7 +113,7 @@ if __name__ == '__main__':
 
     request_generator = RequestGenerator(request_queue=request_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                          num_engines=num_engines,
-                                         trace=trace, batch_size=batch_size, max_iters=max_iters, rate=0, trials=num_trials)
+                                         trace=trace, batch_size=batch_size, max_iters=max_iters, rate=args.rate, trials=num_trials)
     request_generator.start()
     response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                            num_engines=num_engines, num_devices=num_devices, executors_per_store=executors_per_store,

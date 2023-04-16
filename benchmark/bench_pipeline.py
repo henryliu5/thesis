@@ -47,9 +47,9 @@ if __name__ == '__main__':
     executors_per_store = args.executors_per_store
     num_engines = num_devices * executors_per_store
 
-    MULTIPLIER = 2
+    MULTIPLIER = 1
     dataset = 'ogbn-products'
-    batch_size = 256
+    batch_size = 128
     max_iters = 512000
     infer_percent = 0.1 * MULTIPLIER
     model_name = 'gcn'
@@ -79,9 +79,9 @@ if __name__ == '__main__':
 
 
     # Pipeline stages per device
-    samplers = 2
-    data_loaders = 2
-    model_executors = 2
+    samplers = 4
+    data_loaders = 4
+    model_executors = 4
 
     num_worker_procs = num_devices * (samplers + data_loaders + model_executors)
 
@@ -94,7 +94,7 @@ if __name__ == '__main__':
 
     request_generator = RequestGenerator(request_queue=request_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                          num_engines=num_engines,
-                                         trace=trace, batch_size=batch_size, max_iters=500, rate=150, trials=num_trials)
+                                         trace=trace, batch_size=batch_size, max_iters=500, rate=0, trials=num_trials)
     request_generator.start()
     response_recipient = ResponseRecipient(response_queue=response_queue, start_barrier=start_barrier, finish_barrier=finish_barrier, trial_barriers=trial_barriers,
                                            num_engines=num_engines, num_devices=num_devices, executors_per_store=executors_per_store,

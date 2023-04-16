@@ -1,7 +1,7 @@
 import torch
 from fast_inference.message import Message, MessageType, RequestPayload, SamplerQueuePayload, FeatureQueuePayload, ResponsePayload
 from fast_inference.sampler import InferenceSampler
-from fast_inference.feat_server import FeatureServer, ManagedCacheServer
+from fast_inference.feat_server import FeatureServer, ManagedCacheServer, CountingFeatServer
 from fast_inference.timer import export_dict_as_pd, enable_timers, Timer
 import time
 from dataclasses import dataclass
@@ -109,11 +109,13 @@ class PipelineWorker(Process):
         psutil.Process().cpu_affinity(pin_cores)
         print(f'setting cpu affinity', psutil.Process().cpu_affinity())
         # torch.set_num_threads(os.cpu_count() // 2)
-        torch.set_num_threads(16)
+        torch.set_num_threads(4)
         print('using intra-op threads:', torch.get_num_threads())
 
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
+        if type(self.feature_store) == CountingFeatServer:
+            self.feature_store.init_locks() 
 
         enable_timers()
     
@@ -238,12 +240,12 @@ def model_executor_strategy(worker: PipelineWorker, in_msg: Message) -> Message:
     outputs = outputs.cpu()
 
     e = time.perf_counter()
-    print('elapsed', round(e - msg.timing_info['sample_start'], 5),
-          round(e - msg.timing_info['time_generated'], 5),
-          'sample', round(msg.timing_info['sample'], 5),
-          'data_load', round(msg.timing_info['data_load_time'], 5),
-          'exec', round(e - s, 5),
-          'diff', round(e - msg.timing_info['sample_start'] - msg.timing_info['sample'] - msg.timing_info['data_load_time'] - (e-s), 5))
+    # print('elapsed', round(e - msg.timing_info['sample_start'], 5),
+    #       round(e - msg.timing_info['time_generated'], 5),
+    #       'sample', round(msg.timing_info['sample'], 5),
+    #       'data_load', round(msg.timing_info['data_load_time'], 5),
+    #       'exec', round(e - s, 5),
+    #       'diff', round(e - msg.timing_info['sample_start'] - msg.timing_info['sample'] - msg.timing_info['data_load_time'] - (e-s), 5))
 
     return Message(id=msg.id,
                    trial=msg.trial,

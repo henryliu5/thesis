@@ -76,11 +76,8 @@ class InferenceEngine(Process):
         elif type(self.feature_store) == CountingFeatServer:
             self.feature_store.init_locks()
 
-        # # Check that feature stores are sharing information correctly
-        # for peer in self.feature_store.caches:
-        #     assert(peer.nid_is_on_gpu.is_shared())
-        #     assert(peer.cache_mapping.is_shared())
-        #     assert(peer.cache['feat'].is_shared())
+        TRACES['exec_time_since_generated'] = []
+        
         self.model_stream = torch.cuda.Stream(device=self.device, priority=-1)
         print('InferenceEngine', self.device_id, 'started')
         self.start_barrier.wait()
@@ -121,8 +118,10 @@ class InferenceEngine(Process):
                                     x.cpu()
                                 torch.cuda.current_stream().wait_stream(self.model_stream)
                         requests_handled += 1
-
+                        TRACES['exec_time_since_generated'].append(time.perf_counter() - timing_info['time_generated'])
+                        
                     timing_info['time_exec_finished'] = time.perf_counter()
+                   
 
                     if req.msg_type != MessageType.WARMUP:
                         # self.response_queue.put(Request(None, None, None, req.id, req.trial, MessageType.RESPONSE if req.msg_type == MessageType.INFERENCE else req.msg_type, req.time_generated, req.time_exec_started, req.time_exec_finished))
@@ -138,6 +137,13 @@ class InferenceEngine(Process):
                             self.feature_store.export_profile(f'{self.output_path}/{self.model_name.upper()}_cache_info', {'name': self.dataset, 'batch_size': self.batch_size, 'trial': cur_trial})
                         # print_timer_info()    
                         #!! TODO replace GCN with model name
+                        export_timer_info(f'{self.output_path}/GCN_breakdown_with_trials', {'cache_type': self.feature_store.cache_name,
+                                                                            'store_id': self.feature_store.store_id,
+                                                                            'executor_id': self.feature_store.executor_id,
+                                                                            'num_stores': len(self.feature_store.caches),
+                                                                            'executors_per_store': self.feature_store.executors_per_store,
+                                                                            'trial': cur_trial})
+
                         export_timer_info(f'{self.output_path}/GCN_breakdown', {'cache_type': self.feature_store.cache_name,
                                                                                                     'store_id': self.feature_store.store_id,
                                                                                                     'executor_id': self.feature_store.executor_id,
