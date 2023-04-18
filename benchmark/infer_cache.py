@@ -22,7 +22,7 @@ device = torch.device('cuda', 0)
 
 # TODO figure out how to enable inference mode and still make cpp cache server work
 @torch.inference_mode()
-def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=5_000_000, run_profiling=False, trials=1):
+def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=2_000, run_profiling=False, trials=1):
     BATCH_SIZE = batch_size
     enable_timers()
 
@@ -39,12 +39,12 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
     elif name == 'cora':
         infer_percent = 0.7
     elif name == 'ogbn-papers100M':
-        infer_percent = 0.05
+        infer_percent = 0.01
         cache_percent /= 4
 
-        if subgraph_bias is not None:
-            print("Subgraph bias for ogbn-papers100M not supported")
-            return
+        # if subgraph_bias is not None:
+        #     print("Subgraph bias for ogbn-papers100M not supported")
+        #     return
 
     infer_data = InferenceDataset(name, infer_percent, partitions=5, force_reload=False, verbose=True)
 
@@ -64,6 +64,7 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         trace = infer_data.create_inference_trace(trace_len=1_000_000, subgraph_bias=subgraph_bias)
     else:
         trace = infer_data.create_inference_trace(subgraph_bias=subgraph_bias)
+
     n = len(trace)
     # if infer_data._orig_name == 'reddit':
     #     n = len(trace) // 10
@@ -99,12 +100,12 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         if feat_server:
             if cache_type == 'cpp':
                 feat_server.start_manager()
-            elif cache_type == 'count':
+            elif isinstance(feat_server, CountingFeatServer):
                 feat_server.init_locks()
 
             k = 2000
             if name == 'ogbn-papers100M':
-                k = 40000
+                k = 20000
 
             processed = 0
 
@@ -215,9 +216,15 @@ if __name__ == '__main__':
         # names = ['ogbn-papers100M']
         # names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
         # names = ['ogbn-papers100M']
-        names = ['ogbn-products']
+        # names = ['ogbn-products']
+        # names = ['reddit', 'cora', 'ogbn-products', 'ogbn-arxiv']
+        # names = ['ogbn-papers100M']
         # batch_sizes = [32, 64, 128, 256, 512]
-        batch_sizes = [256]
+        # batch_sizes = [128]
+        names = ['reddit']
+        batch_sizes = [32]
+        # names = ['ogbn-products']
+        # batch_sizes = [256]
     else:
         # names = ['ogbn-products', 'ogbn-papers100M']
         names = ['ogbn-papers100M']

@@ -348,7 +348,7 @@ class InferenceDataset(DGLDataset):
         else:
             assert (subgraph_bias >= 0 and subgraph_bias <= 1)
             # TODO support partitioning for ogbn-papers100M
-            assert (self._orig_name != 'ogbn-papers100M'), "Partitioning for ogbn-papers100M not supported"
+            # assert (self._orig_name != 'ogbn-papers100M'), "Partitioning for ogbn-papers100M not supported"
             # TODO actually parallelize with torch/numpy ops
             generated_indices = []
             # Whether a nid has been used yet in the trace
@@ -433,6 +433,7 @@ class InferenceDataset(DGLDataset):
         self._pruned_graph = self.graphs[0]
 
         info_path = os.path.join(self.save_path, '_info.pkl')
+        print('loading info from', info_path)
         trace_info = load_info(info_path)
         self._num_infer_targets = trace_info['num_infer_targets']
         self._num_classes = trace_info['num_classes']

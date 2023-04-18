@@ -142,7 +142,7 @@ class PartitionCache:
     
 
 class CountingCache:
-    UPDATES_TO_DECREMENT = 10
+    UPDATES_TO_DECREMENT = 1
     ''' LFU-like cache, can be updated with update_cache 
         Partition 0, 66.25 % neighbors in subgraph, 80.00 % seed in subgraph, 52.45 % in topk, 78.71 % in LFU, bias is 0.8                                         
         Partition 1, 59.99 % neighbors in subgraph, 80.10 % seed in subgraph, 50.14 % in topk, 73.48 % in LFU, bias is 0.8                                         
@@ -279,6 +279,7 @@ class CountingCache:
 def main():
     # infer_data = InferenceDataset('reddit', 0.1, verbose=True)
     infer_data = InferenceDataset('ogbn-products', 0.1, verbose=True)
+    # infer_data = InferenceDataset('ogbn-papers100M', 0.01, verbose=True)
     g = infer_data[0]
 
     bias = 0.8
@@ -320,7 +321,9 @@ def main():
             # Perform sampling
             new_nid = trace.nids[cur_index]
             new_nid = new_nid.reshape(1)
-            adj_nids = trace.edges[cur_index]["in"]
+            # adj_nids = trace.edges[cur_index]["in"]
+            adj_nids = trace.edges.get_batch(cur_index, cur_index + 1).in_edge_endpoints
+            
             frontier = dgl.sampling.sample_neighbors(g, adj_nids.to("cuda"), -1)
             all_seeds = torch.cat((adj_nids.unique(), new_nid))
 

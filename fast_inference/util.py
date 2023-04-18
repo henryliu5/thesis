@@ -1,6 +1,6 @@
 import torch
 import dgl
-from fast_inference.feat_server import FeatureServer, CountingFeatServer, ManagedCacheServer
+from fast_inference.feat_server import FeatureServer, CountingFeatServer, ManagedCacheServer, LFUServer, FrequencySynchronousCache
 from fast_inference_cpp import shm_setup
 from fast_inference.device_cache import DeviceFeatureCache
 from typing import List
@@ -49,6 +49,10 @@ def create_feature_stores(cache_type: str, num_stores: int, executors_per_store:
     elif cache_type == 'cpp_lock':
         store_type = ManagedCacheServer
         additional_args['use_locking'] = True
+    elif cache_type == 'lfu':
+        store_type = LFUServer
+    elif cache_type == 'freq-sync':
+        store_type = FrequencySynchronousCache
     else:
         print('Cache type', cache_type, 'not supported')
         exit()
