@@ -1,5 +1,5 @@
 from ogb.nodeproppred import DglNodePropPredDataset
-from dgl.data import DGLDataset, RedditDataset, CoraFullDataset, CiteseerGraphDataset
+from dgl.data import DGLDataset, RedditDataset, CoraFullDataset, CiteseerGraphDataset, YelpDataset
 import os
 import shutil
 import dgl
@@ -225,6 +225,9 @@ class InferenceDataset(DGLDataset):
                                             **self._internal_kwargs)
         elif self._orig_name == 'citeseer':
             self._dataset = CiteseerGraphDataset(verbose=self._verbose,
+                                                 **self._internal_kwargs)
+        elif self._orig_name == 'yelp':
+            self._dataset = YelpDataset(verbose=self._verbose,
                                                  **self._internal_kwargs)
 
         self._orig_graph = self._dataset[0]
