@@ -1,3 +1,5 @@
+#ifndef CACHE_MANAGER_H
+#define CACHE_MANAGER_H
 // #include <boost/lockfree/spsc_queue.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/condition_variable.hpp>
@@ -18,6 +20,7 @@
 #include <chrono>
 #include <vector>
 #include <algorithm>
+#include "shm.hpp"
 using namespace std::chrono;
 
 
@@ -34,20 +37,6 @@ using namespace std::chrono;
 #   define ASSERT(condition, message) do { } while (false)
 #endif
 
-class AutoProfiler {
- public:
-  AutoProfiler(std::string name)
-      : m_name(std::move(name)),
-        m_beg(std::chrono::high_resolution_clock::now()) { }
-  ~AutoProfiler() {
-    auto end = std::chrono::high_resolution_clock::now();
-    auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end - m_beg);
-    std::cout << m_name << " : " << dur.count() << " musec\n";
-  }
- private:
-  std::string m_name;
-  std::chrono::time_point<std::chrono::high_resolution_clock> m_beg;
-};
 
 using torch::indexing::Slice, torch::indexing::None;
 using std::cout, std::endl;
@@ -147,35 +136,6 @@ public:
 
 using namespace boost::interprocess;
 
-std::string atomic_start_name(int target_store_id, int reader_store_id, int reader_executor_id){
-    return "fast_inference_atomic_gpu_" + std::to_string(target_store_id) + "_store_" + std::to_string(reader_store_id) + "_executor_" + std::to_string(reader_executor_id) + "start";
-}
-
-std::string atomic_finish_name(int target_store_id, int reader_store_id, int reader_executor_id){
-    return "fast_inference_atomic_gpu_" + std::to_string(target_store_id) + "_store_" + std::to_string(reader_store_id) + "_executor_" + std::to_string(reader_executor_id) + "finish";
-}
-
-void shmSetup(int num_stores, int executors_per_store){
-    shared_memory_object::remove("fast_inference_shared_mem");
-    managed_shared_memory segment(create_only, "fast_inference_shared_mem", 65536);
-
-    for(int i = 0; i < num_stores; i++){
-        auto lock_name = ("fast_inference_mutex_gpu_" + std::to_string(i)).c_str();
-        cout << "Constructing lock: " << lock_name << endl;
-        segment.construct<interprocess_sharable_mutex>(lock_name)();
-
-        for(int j = 0; j < num_stores; j++){
-            for(int k = 0; k < executors_per_store; k++){
-                auto start_name = atomic_start_name(i, j, k).c_str();
-                segment.construct<std::atomic<int>>(start_name)(0);
-
-                auto finish_name = atomic_finish_name(i, j, k).c_str();
-                segment.construct<std::atomic<int>>(finish_name)(0);
-            }
-        }
-    }
-}
-
 class CacheManager {
     /** Controls cache state.
      *  Computes cache usage statistics and performs dynamic cache updates.
@@ -184,6 +144,7 @@ private:
     int cache_size;
     int num_engines;
     int device_id;
+    int executor_id;
     // int update_frequency;
     // int decay_frequency;
     // int staging_area_size;
@@ -232,7 +193,7 @@ private:
 
 
 public:
-    CacheManager(const int num_total_nodes, const int cache_size, const int device_id, const int num_engines, bool use_gpu_transfer, bool use_locking, const int total_stores, const int executors_per_store)
+    CacheManager(const int num_total_nodes, const int cache_size, const int device_id, const int num_engines, bool use_gpu_transfer, bool use_locking, const int total_stores, const int executors_per_store, const int executor_id)
         : cache_size(cache_size)
         , worker_alive(true)
         , gpu_q()
@@ -251,6 +212,7 @@ public:
         , use_locking(use_locking)
         , total_stores(total_stores)
         , executors_per_store(executors_per_store)
+        , executor_id(executor_id)
     {
         auto lock_name = ("fast_inference_mutex_gpu_" + std::to_string(device_id));
 
@@ -417,9 +379,7 @@ public:
                     // TODO add setting to enable mutex or use atomics
                     // cache_mutex.lock();
                     if(use_locking){
-                        for(int i = 0; i < torch::cuda::device_count(); i++){
-                            torch::cuda::synchronize(i);
-                        }
+                        // myStream.synchronize();
                         ASSERT(local_ipc_mutex != 0, "failed pointer nonzero");
                         local_ipc_mutex->lock();
                     } else {
@@ -459,16 +419,15 @@ public:
                     // TODO figure out "usefulness" threshold, can leave right after computing nids to add shape
                     auto nids_to_add = new_nids.index({new_nid_mask});
 
-                    const float THRESHOLD = 0.01;
+                    const float THRESHOLD = 0.001;
                     if((float) nids_to_add.sizes()[0] / (float) cache_size <= THRESHOLD){
                         if(use_locking){
-                            for(int i = 0; i < torch::cuda::device_count(); i++){
-                                torch::cuda::synchronize(i);
-                            }
+                            // myStream.synchronize();
                             local_ipc_mutex->unlock();
                         } else {
                             local_ipc_mutex->unlock();
                         }
+                        // cout << "missing usefulness threshold: " << (float) nids_to_add.sizes()[0] / (float) cache_size << endl;
                         continue;
                     }
 
@@ -486,11 +445,10 @@ public:
                     if(num_to_add == 0){
                         // cache_mutex.unlock();
                         if(use_locking){
-                            for(int i = 0; i < torch::cuda::device_count(); i++){
-                                torch::cuda::synchronize(i);
-                            }
+                            // myStream.synchronize();
                             local_ipc_mutex->unlock();
                         } else {
+                            // cout << "skipping, num to add 0" << endl;
                             local_ipc_mutex->unlock();
                         }
                         continue;
@@ -522,8 +480,9 @@ public:
                             auto atomic_name = atomic_finish_name(device_id, i, j).c_str();
                             std::atomic<int>* a = segment.find<std::atomic<int>>(atomic_name).first;
                             //!! Need to make sure worker is alive in this loop!
-                            while (a->load() < atomics_at_start[i][j] && worker_alive)
-                            ;
+                            while (a->load() < atomics_at_start[i][j] && worker_alive){
+                                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                            }
                         }
                     }
 
@@ -541,12 +500,10 @@ public:
                     ASSERT(nids_to_add.min().item<long>() >= 0 && nids_to_add.max().item<long>() < cache_mask_device.sizes()[0], "nids to add out of bounds");
                     // Now write 1's
                     cache_mask_device.index_put_({nids_to_add}, true);
-
+                    // cout << "exec " << executor_id << " added " << num_to_add << " nodes to cache" << endl;
                     // cache_mutex.unlock();
                     if(use_locking){
-                        for(int i = 0; i < torch::cuda::device_count(); i++){
-                            torch::cuda::synchronize(i);
-                        }
+                        myStream.synchronize();
                         local_ipc_mutex->unlock();
                     } else {
                         myStream.synchronize();
@@ -569,3 +526,5 @@ public:
 
     void gilRelease(std::function<void()> f);
 };
+
+#endif

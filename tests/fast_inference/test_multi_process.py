@@ -34,8 +34,10 @@ class PipelinedDataloader(Process):
     def run(self):
         if type(self.feature_store) == ManagedCacheServer:
             self.feature_store.start_manager()
+        if type(self.feature_store) == CountingFeatServer:
+            self.feature_store.init_locks()
 
-        print(self.feature_store.cache['feat'].is_shared())
+        # print(self.feature_store.cache['feat'].is_shared())
 
         # Need to re-pin the feature store buffer
         for k, v in self.feature_store.pinned_buf_dict.items():
@@ -44,12 +46,11 @@ class PipelinedDataloader(Process):
         use_prof = False
         enable_timers()
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if use_prof else nullcontext() as prof:
-            for i in tqdm(range(10_000), disable=self.device.index != 0 or not self.feature_store.is_leader):
+            for i in tqdm(range(1_000), disable=self.device.index != 0 or not self.feature_store.is_leader):
                 requested = torch.randint(0, self.num_nodes, (300_000,), device=self.device).unique()
 
                 if i % 10 == 0:
-                    self.feature_store.compute_topk()
-                    self.feature_store.update_cache(['feat'])
+                    self.feature_store.update_cache()
 
                 result, _ = self.feature_store.get_features(requested, ['feat'], None)
 

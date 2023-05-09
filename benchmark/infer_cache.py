@@ -3,6 +3,8 @@ from fast_inference.models.factory import load_model
 from fast_inference.timer import enable_timers, Timer, print_timer_info, export_timer_info, clear_timers
 from fast_inference.feat_server import FeatureServer, CountingFeatServer, LFUServer, ManagedCacheServer
 from fast_inference.sampler import InferenceSampler
+from fast_inference.device_cache import DeviceFeatureCache
+from fast_inference.util import create_feature_stores
 from fast_inference_cpp import shm_setup
 import dgl
 import torch
@@ -20,7 +22,7 @@ device = torch.device('cuda', 0)
 
 # TODO figure out how to enable inference mode and still make cpp cache server work
 @torch.inference_mode()
-def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=5_000_000, run_profiling=False, trials=1):
+def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=1_000, run_profiling=False, trials=1):
     BATCH_SIZE = batch_size
     enable_timers()
 
@@ -32,19 +34,24 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
     print('using intra-op threads:', torch.get_num_threads())
 
     infer_percent = 0.1
+    partitions = 5
     if name == 'reddit' or name == 'ogbn-arxiv':
         infer_percent = 0.4
     elif name == 'cora':
         infer_percent = 0.7
+    elif name == 'yelp':
+        infer_percent = 0.3
     elif name == 'ogbn-papers100M':
         infer_percent = 0.05
-        cache_percent /= 4
+        MAX_ITERS = 3_000
+        # partitions = 10
+        # cache_percent /= 4
 
-        if subgraph_bias is not None:
-            print("Subgraph bias for ogbn-papers100M not supported")
-            return
+        # if subgraph_bias is not None:
+        #     print("Subgraph bias for ogbn-papers100M not supported")
+        #     return
 
-    infer_data = InferenceDataset(name, infer_percent, partitions=5, force_reload=False, verbose=True)
+    infer_data = InferenceDataset(name, infer_percent, partitions=partitions, force_reload=False, verbose=True)
 
     g = infer_data[0]
     in_size = g.ndata["feat"].shape[1]
@@ -59,9 +66,11 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
 
     print(logical_g)
     if name == 'ogbn-papers100M':
-        trace = infer_data.create_inference_trace(trace_len=1_000_000, subgraph_bias=subgraph_bias)
+        trace = infer_data.create_inference_trace(trace_len=10_000_000, subgraph_bias=subgraph_bias)
     else:
         trace = infer_data.create_inference_trace(subgraph_bias=subgraph_bias)
+    # trace = infer_data.create_inference_trace(trace_len=MAX_ITERS * batch_size, subgraph_bias=subgraph_bias)
+
     n = len(trace)
     # if infer_data._orig_name == 'reddit':
     #     n = len(trace) // 10
@@ -79,51 +88,39 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
         shm_setup(1, 1)
         # Set up feature server
         cache_type = cache_type or 'baseline'
-        if cache_type == 'static':
-            feat_server = FeatureServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
-        elif cache_type == 'count':
-            feat_server = CountingFeatServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
-        elif cache_type == 'lfu':
-            feat_server = LFUServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
-        elif cache_type == 'hybrid' or cache_type == 'async':
-            feat_server = HybridServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True)
-        elif cache_type == 'baseline':
-            feat_server = None
-        elif cache_type == 'cpp':
-            feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, torch.device('cuda', 0), 0, ['feat'], use_pinned_mem=use_pinned_mem, profile_hit_rate=True, executors_per_store=1, total_stores=1)
+        if cache_type != 'baseline':
+            stores = create_feature_stores(cache_type, 
+                                           num_stores=1, 
+                                           executors_per_store=1,
+                                           graph=g, 
+                                           track_feature_types=['feat'], 
+                                           cache_percent=cache_percent, 
+                                           use_pinned_mem=use_pinned_mem, 
+                                           profile_hit_rate=True, 
+                                           pinned_buf_size=1_000_000,
+                                           use_pytorch_direct=False)
+            feat_server = stores[0][0]
         else:
-            print('Cache type', cache_type, 'not supported')
-            exit()
-        # # #!! Use only from partition 1
-        # part_mapping = infer_data._orig_nid_partitions
-        # indices = torch.arange(g.num_nodes())[part_mapping == 2]
+            feat_server = None
 
         if feat_server:
-            # Let's use top 20% of node features for static cache
-            out_deg = g.out_degrees()
-            _, indices = torch.topk(out_deg, int(g.num_nodes() * cache_percent), sorted=True)
-            del out_deg
-            feat_server.set_static_cache(indices.to(device), ['feat'])
-
             if cache_type == 'cpp':
                 feat_server.start_manager()
+            elif isinstance(feat_server, CountingFeatServer):
+                feat_server.init_locks()
 
             k = 2000
             if name == 'ogbn-papers100M':
-                k = 40000
+                k = 30000
 
             processed = 0
 
-            print('Caching', indices.shape[0], 'nodes')
-            del indices
-            gc.collect()
-        
-            # Need to do this BEFORE converting to logical graph since nodes will be removed
-            feat_server.init_counts(g.num_nodes())
         elif use_pinned_mem:
             pin_buf = torch.empty((150_000, g.ndata['feat'].shape[1]), dtype=torch.float, pin_memory=True)
 
         sampler = InferenceSampler(logical_g)
+
+        model_stream = torch.cuda.Stream(device=device, priority=-1)
 
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if run_profiling else nullcontext() as prof:
             for i in tqdm(range(0, min(n, MAX_ITERS * BATCH_SIZE), BATCH_SIZE)):
@@ -142,10 +139,7 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
                             # Cache: (update) + feature gather + CPU-GPU copy
                             with Timer(name="update cache", track_cuda=True):
                                 if (i // k) > processed + 1:
-                                    if cache_type == 'cpp' or cache_type == 'count':
-                                        feat_server.compute_topk()
-
-                                    feat_server.update_cache(['feat'])
+                                    feat_server.update_cache()
                                     processed = i // k  
 
                             inputs, mfgs = feat_server.get_features(required_feats, feats=['feat'], mfgs=mfgs)
@@ -170,10 +164,9 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
                                 inputs = inputs.to(device)
                         
 
-                    with Timer(name='model', track_cuda=True):
-                        with Timer('actual forward'):
+                    with Timer(name='model'):
+                        with torch.cuda.stream(model_stream):
                             x = model(mfgs, inputs)
-
                         # Force sync
                         x.cpu()
 
@@ -232,8 +225,13 @@ if __name__ == '__main__':
         # names = ['ogbn-papers100M']
         # names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
         # names = ['ogbn-papers100M']
+        # names = ['ogbn-products']
+        # names = ['yelp']#, 'ogbn-arxiv']
+        # names = ['ogbn-papers100M']
+        # names = ['ogbn-arxiv']
+        # batch_sizes = [64, 128, 256]
+        # batch_sizes = [32, 64, 128, 256, 512]#, 512]
         names = ['ogbn-products']
-        # batch_sizes = [32, 64, 128, 256, 512]
         batch_sizes = [256]
     else:
         # names = ['ogbn-products', 'ogbn-papers100M']

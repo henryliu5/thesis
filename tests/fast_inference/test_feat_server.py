@@ -1,4 +1,5 @@
 from fast_inference.feat_server import FeatureServer, ManagedCacheServer, CountingFeatServer
+from fast_inference.device_cache import DeviceFeatureCache
 import dgl
 import torch
 from tqdm import tqdm
@@ -13,14 +14,16 @@ def test_feat_server():
     g.ndata['x'] = x_feats
     g.ndata['y'] = y_feats
 
+    cache = DeviceFeatureCache.initialize_cache(init_nids=torch.tensor([0, 2, 4], dtype=torch.long, device=device), num_nodes=g.num_nodes(), feats=g.ndata, device=device, cache_id=0, total_caches=1)
+
     assert (g.device == torch.device('cpu'))
     # TODO add support for multidimensional features ('y')
-    server = FeatureServer(g.num_nodes(), g.ndata, device, 0, track_features=['x'])
+    server = FeatureServer([cache], g.num_nodes(), g.ndata, device, 0, 0, track_features=['x'])
 
     # Set the cache to be nodes 0, 2, 4
-    server.set_static_cache(node_ids=torch.tensor([0, 2, 4], dtype=torch.long, device=device), feats=['x'])
+    # server.set_static_cache(node_ids=torch.tensor([0, 2, 4], dtype=torch.long, device=device), feats=['x'])
     # Check cache properties
-    assert (server.cache['x'].shape == torch.Size([3, 3]))
+    assert (server.caches[0].cache['x'].shape == torch.Size([3, 3]))
     # assert (server.cache['y'].shape == torch.Size([3, 5, 4]))
 
     feats, _ = server.get_features(torch.tensor([0, 1, 2], device=device, dtype=torch.long), feats=['x'], mfgs=None)
@@ -49,8 +52,10 @@ def test_new_server_correctness():
 
     from fast_inference_cpp import shm_setup
     shm_setup(1, 1)
-    feat_server = ManagedCacheServer(g.num_nodes(), g.ndata, device, 0, track_features=['x'], executors_per_store=1, total_stores=1)
-    feat_server.set_static_cache(node_ids=torch.arange(int(n * 0.80), dtype=torch.long, device=device), feats=['x'])
+
+    cache = DeviceFeatureCache.initialize_cache(init_nids=torch.arange(int(n * 0.80), dtype=torch.long, device=device), num_nodes=g.num_nodes(), feats=g.ndata, device=device, cache_id=0, total_caches=1)
+    feat_server = ManagedCacheServer([cache], g.num_nodes(), g.ndata, device, 0, 0, track_features=['x'], executors_per_store=1, total_stores=1)
+
     feat_server.init_counts(n)
     feat_server.start_manager()
 
@@ -59,8 +64,7 @@ def test_new_server_correctness():
         requested = torch.randint(0, n, (32,), device=device).unique()
 
         if i % do_topk == 0:
-            feat_server.compute_topk()
-            feat_server.update_cache(['x'])
+            feat_server.update_cache()
         
         result, _ = feat_server.get_features(requested, ['x'])
 

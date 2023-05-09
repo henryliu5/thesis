@@ -1,5 +1,5 @@
 from ogb.nodeproppred import DglNodePropPredDataset
-from dgl.data import DGLDataset, RedditDataset, CoraFullDataset, CiteseerGraphDataset
+from dgl.data import DGLDataset, RedditDataset, CoraFullDataset, CiteseerGraphDataset, YelpDataset
 import os
 import shutil
 import dgl
@@ -226,6 +226,9 @@ class InferenceDataset(DGLDataset):
         elif self._orig_name == 'citeseer':
             self._dataset = CiteseerGraphDataset(verbose=self._verbose,
                                                  **self._internal_kwargs)
+        elif self._orig_name == 'yelp':
+            self._dataset = YelpDataset(verbose=self._verbose,
+                                                 **self._internal_kwargs)
 
         self._orig_graph = self._dataset[0]
         self._orig_nid_partitions = dgl.metis_partition_assignment(self._orig_graph, self._num_partitions)
@@ -348,7 +351,7 @@ class InferenceDataset(DGLDataset):
         else:
             assert (subgraph_bias >= 0 and subgraph_bias <= 1)
             # TODO support partitioning for ogbn-papers100M
-            assert (self._orig_name != 'ogbn-papers100M'), "Partitioning for ogbn-papers100M not supported"
+            # assert (self._orig_name != 'ogbn-papers100M'), "Partitioning for ogbn-papers100M not supported"
             # TODO actually parallelize with torch/numpy ops
             generated_indices = []
             # Whether a nid has been used yet in the trace
@@ -433,6 +436,7 @@ class InferenceDataset(DGLDataset):
         self._pruned_graph = self.graphs[0]
 
         info_path = os.path.join(self.save_path, '_info.pkl')
+        print('loading info from', info_path)
         trace_info = load_info(info_path)
         self._num_infer_targets = trace_info['num_infer_targets']
         self._num_classes = trace_info['num_classes']

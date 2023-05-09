@@ -67,21 +67,22 @@ class InferenceSampler:
 
             # with Timer('create sampling graph'):
             # Get existing edges in the graph
-            u, v = self.g.in_edges(required_nodes_unique)
-            sampling_graph = dgl.graph((u, v), num_nodes=max(self.g.num_nodes(), new_nid.max().item()), device=device)
+            # u, v = self.g.in_edges(required_nodes_unique)
+            # sampling_graph = dgl.graph((u, v), num_nodes=max(self.g.num_nodes(), new_nid.max().item()), device=device)
 
             # with Timer('create new edges'):
-            if type(edges) == FastEdgeRepr:
-                u = torch.repeat_interleave(new_nid, edges.out_edge_count.to(device))
-                v = edges.out_edge_endpoints.to(device)
-            else:
-                out_interleave_count = torch.tensor([edges[idx]["out"].shape[0] for idx in range(batch_size)], device=device)
-                u = torch.repeat_interleave(new_nid, out_interleave_count)
-                v = torch.cat([edges[idx]["out"] for idx in range(batch_size)]).to(device)
+            # if type(edges) == FastEdgeRepr:
+            #     u = torch.repeat_interleave(new_nid, edges.out_edge_count.to(device))
+            #     v = edges.out_edge_endpoints.to(device)
+            # else:
+            #     out_interleave_count = torch.tensor([edges[idx]["out"].shape[0] for idx in range(batch_size)], device=device)
+            #     u = torch.repeat_interleave(new_nid, out_interleave_count)
+            #     v = torch.cat([edges[idx]["out"] for idx in range(batch_size)]).to(device)
         
             # with Timer('update sampling graph with new edges'):
-            sampling_graph.add_edges(u, v)
+            # sampling_graph.add_edges(u, v)
 
+            sampling_graph = self.g
 
             # with Timer('dgl sample neighbors'):
             if use_gpu_sampling:
