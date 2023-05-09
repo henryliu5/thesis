@@ -6,11 +6,11 @@ plt.style.use('seaborn')
 from util import load_dfs
 
 def plot_speedup(model_name, cache_path, baseline_path, title = ""):
-    graph_names = ['reddit', 'cora', 'ogbn-products']#, 'ogbn-papers100M']
-    batch_sizes = [1, 64, 128, 256]
+    graph_names = ['reddit', 'yelp', 'ogbn-products', 'ogbn-papers100M']
+    batch_sizes = [32, 64, 128, 256, 512]
 
-    baseline_df = load_dfs(model_name, baseline_path, graph_names, batch_sizes).groupby(['name', 'batch_size']).mean()
-    cache_df = load_dfs(model_name, cache_path, graph_names, batch_sizes).groupby(['name', 'batch_size']).mean()
+    baseline_df = load_dfs(model_name, baseline_path, graph_names, batch_sizes).groupby(['name', 'batch_size']).median()
+    cache_df = load_dfs(model_name, cache_path, graph_names, batch_sizes).groupby(['name', 'batch_size']).median()
     # cache_df = cache_df.drop(columns=['weird index', 'compute gpu/cpu mask', 'get_features()', 'mask cpu feats', 'allocate res tensor'])
     print(baseline_df)
     print(cache_df)
@@ -22,17 +22,20 @@ def plot_speedup(model_name, cache_path, baseline_path, title = ""):
     print(df)
     df -= 1
     df = df.reset_index()
-    df['name'] = pd.Categorical(df['name'], ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M'])
+    df['name'] = pd.Categorical(df['name'], graph_names)
+    df['dataset'] = df['name']
+    df['Request Batch Size'] = df['batch_size']
+    df['Data Loading'] = df['dataloading']
     df.sort_values('name')
     print(df)
 
-    runtime_parts = ['sampling', 'feature gather', 'CPU-GPU copy', 'model', 'total', 'dataloading']
+    runtime_parts = ['sampling', 'feature gather', 'CPU-GPU copy', 'model', 'total', 'Data Loading']
     for p in runtime_parts:
-        g = sns.catplot(df, x='batch_size', y=p,
-                        col='name', kind="bar", col_wrap=2, bottom=1)
+        g = sns.catplot(df, x='Request Batch Size', y=p,
+                        col='dataset', kind="bar", col_wrap=2, bottom=1, height=3)
         
-        g.fig.subplots_adjust(top=.92)
-        g.fig.suptitle(f'{model_name} {p} speedup {title}', fontsize=20)
+        g.fig.subplots_adjust(top=.9)
+        g.fig.suptitle(f'{model_name} {p} speedup {title}', fontsize=12)
         # iterate through axes
         for ax in g.axes.ravel():
             # add annotations
@@ -45,8 +48,11 @@ def plot_speedup(model_name, cache_path, baseline_path, title = ""):
         plt.clf()
 
 if __name__ == '__main__':
-    cache_path = 'testing/gpu/pinned/bias_0.8/cpp_0.2'
-    baseline_path = 'testing/gpu/pinned/bias_0.8/static_0.2'
-    plot_speedup('GCN', cache_path, baseline_path, title="(GPU sampling, 20% static cache)")
-    # plot_latency_breakdown('SAGE')
-    # plot_latency_breakdown('GAT')
+    cache_path = 'testing/gpu/pinned/uniform/cpp_0.2'
+    baseline_path = 'testing/gpu/pinned/uniform/static_0.2'
+    plot_speedup('GCN', cache_path, baseline_path, title="| Uniform Requests, Frequency Lock-Free vs. Static Cache")
+
+    # cache_path = 'testing/gpu/pinned/bias_0.8/cpp_0.2'
+    # baseline_path = 'testing/gpu/pinned/bias_0.8/static_0.2'
+    # plot_speedup('GCN', cache_path, baseline_path, title="| Biased Requests, Frequency Lock-Free vs. Static Cache")
+

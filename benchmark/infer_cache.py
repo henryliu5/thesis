@@ -22,7 +22,7 @@ device = torch.device('cuda', 0)
 
 # TODO figure out how to enable inference mode and still make cpp cache server work
 @torch.inference_mode()
-def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=2_000, run_profiling=False, trials=1):
+def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent, dir = None, use_gpu_sampling = False, use_pinned_mem = True, MAX_ITERS=1_000, run_profiling=False, trials=1):
     BATCH_SIZE = batch_size
     enable_timers()
 
@@ -34,19 +34,24 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
     print('using intra-op threads:', torch.get_num_threads())
 
     infer_percent = 0.1
+    partitions = 5
     if name == 'reddit' or name == 'ogbn-arxiv':
         infer_percent = 0.4
     elif name == 'cora':
         infer_percent = 0.7
+    elif name == 'yelp':
+        infer_percent = 0.3
     elif name == 'ogbn-papers100M':
-        infer_percent = 0.01
-        cache_percent /= 4
+        infer_percent = 0.05
+        MAX_ITERS = 3_000
+        # partitions = 10
+        # cache_percent /= 4
 
         # if subgraph_bias is not None:
         #     print("Subgraph bias for ogbn-papers100M not supported")
         #     return
 
-    infer_data = InferenceDataset(name, infer_percent, partitions=5, force_reload=False, verbose=True)
+    infer_data = InferenceDataset(name, infer_percent, partitions=partitions, force_reload=False, verbose=True)
 
     g = infer_data[0]
     in_size = g.ndata["feat"].shape[1]
@@ -61,9 +66,10 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
 
     print(logical_g)
     if name == 'ogbn-papers100M':
-        trace = infer_data.create_inference_trace(trace_len=1_000_000, subgraph_bias=subgraph_bias)
+        trace = infer_data.create_inference_trace(trace_len=10_000_000, subgraph_bias=subgraph_bias)
     else:
         trace = infer_data.create_inference_trace(subgraph_bias=subgraph_bias)
+    # trace = infer_data.create_inference_trace(trace_len=MAX_ITERS * batch_size, subgraph_bias=subgraph_bias)
 
     n = len(trace)
     # if infer_data._orig_name == 'reddit':
@@ -105,7 +111,7 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
 
             k = 2000
             if name == 'ogbn-papers100M':
-                k = 20000
+                k = 30000
 
             processed = 0
 
@@ -113,6 +119,8 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
             pin_buf = torch.empty((150_000, g.ndata['feat'].shape[1]), dtype=torch.float, pin_memory=True)
 
         sampler = InferenceSampler(logical_g)
+
+        model_stream = torch.cuda.Stream(device=device, priority=-1)
 
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) if run_profiling else nullcontext() as prof:
             for i in tqdm(range(0, min(n, MAX_ITERS * BATCH_SIZE), BATCH_SIZE)):
@@ -157,7 +165,8 @@ def main(name, model_name, batch_size, cache_type, subgraph_bias, cache_percent,
                         
 
                     with Timer(name='model'):
-                        x = model(mfgs, inputs)
+                        with torch.cuda.stream(model_stream):
+                            x = model(mfgs, inputs)
                         # Force sync
                         x.cpu()
 
@@ -217,14 +226,13 @@ if __name__ == '__main__':
         # names = ['reddit', 'cora', 'ogbn-products', 'ogbn-papers100M']
         # names = ['ogbn-papers100M']
         # names = ['ogbn-products']
-        # names = ['reddit', 'cora', 'ogbn-products', 'ogbn-arxiv']
+        # names = ['yelp']#, 'ogbn-arxiv']
         # names = ['ogbn-papers100M']
-        # batch_sizes = [32, 64, 128, 256, 512]
-        # batch_sizes = [128]
-        names = ['reddit']
-        batch_sizes = [32]
-        # names = ['ogbn-products']
-        # batch_sizes = [256]
+        # names = ['ogbn-arxiv']
+        # batch_sizes = [64, 128, 256]
+        # batch_sizes = [32, 64, 128, 256, 512]#, 512]
+        names = ['ogbn-products']
+        batch_sizes = [256]
     else:
         # names = ['ogbn-products', 'ogbn-papers100M']
         names = ['ogbn-papers100M']

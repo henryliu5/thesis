@@ -419,7 +419,7 @@ public:
                     // TODO figure out "usefulness" threshold, can leave right after computing nids to add shape
                     auto nids_to_add = new_nids.index({new_nid_mask});
 
-                    const float THRESHOLD = 0.01;
+                    const float THRESHOLD = 0.001;
                     if((float) nids_to_add.sizes()[0] / (float) cache_size <= THRESHOLD){
                         if(use_locking){
                             // myStream.synchronize();
@@ -427,6 +427,7 @@ public:
                         } else {
                             local_ipc_mutex->unlock();
                         }
+                        // cout << "missing usefulness threshold: " << (float) nids_to_add.sizes()[0] / (float) cache_size << endl;
                         continue;
                     }
 
@@ -447,6 +448,7 @@ public:
                             // myStream.synchronize();
                             local_ipc_mutex->unlock();
                         } else {
+                            // cout << "skipping, num to add 0" << endl;
                             local_ipc_mutex->unlock();
                         }
                         continue;

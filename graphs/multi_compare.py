@@ -29,11 +29,15 @@ df = df[df.num_stores == 2]
 df1 = df[df.cache_type == type1]
 df2 = df[df.cache_type == type2]
 
-df1 = df1.mean()
-df2 = df2.mean()
+df1 = df1.mean(numeric_only=True)
+df2 = df2.mean(numeric_only=True)
 
 pd.options.display.float_format = "{:,.5f}".format
 print(df1 - df2)
+
+print(type1, 'p99 latency', df[df.cache_type == type1].quantile(0.99, numeric_only=True)['exec request'] * 1000, 'ms')
+print(type2, 'p99 latency', df[df.cache_type == type2].quantile(0.99, numeric_only=True)['exec request'] * 1000, 'ms')
+
 print(type1, 'estimated throughput', df1['num_stores'] * df1['executors_per_store'] / df1['exec request'])
 print(type2, 'estimated throughput', df2['num_stores'] * df2['executors_per_store'] / df2['exec request'])
 # df = df[df.executors_per_store != 16]

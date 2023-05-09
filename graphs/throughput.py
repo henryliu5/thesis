@@ -31,12 +31,16 @@ def main(paths, model_name, graph_name, batch_size, file_suffix='', policy_names
 
     df = df.reset_index()
     num_gpus = 2
-    for i in range(2, 3):
+    for i in range(1, num_gpus + 1):
         plot_df = df.loc[df['num_devices'] == i]
         g = sns.barplot(data=plot_df, x='executors_per_store', y='throughput (req/s)', hue='policy', errorbar='pi')
         g.set_title(
-        f'Throughput {suffix} | {model_name} {graph_name} batch size: {batch_size}')
+        f'Throughput Scaling with {i} GPUs | {model_name} {graph_name} batch size: {batch_size}')
+        fig = plt.gcf()
+        fig.set_size_inches(6, 5)
         plt.tight_layout()
+        plt.ylim(0, 900)
+        plt.xlabel('InferenceEngines per GPU')
         plt.savefig(f'throughput_{model_name}{file_suffix}_gpus_{i}.png',
                     bbox_inches='tight', dpi=250)
         plt.clf()

@@ -136,5 +136,5 @@ def load_dfs(model_name: str, path: str, graph_names: List[str], batch_sizes: Li
     dfs = []
     for name in graph_names:
         for batch_size in batch_sizes:
-            dfs.append(load_df(model_name, path, name, batch_size))
+            dfs.append(load_df(model_name, path, name, batch_size, trials=3))
     return pd.concat(dfs)
